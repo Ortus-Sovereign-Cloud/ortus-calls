@@ -505,7 +505,7 @@ export class WebCall extends LitElement {
     this.pc = pc;
     const channel = pc.createDataChannel("signalling");
     this.channel = channel;
-    channel.onmessage = (e) => void this.signal(String(e.data));
+    channel.onmessage = (e) => this.onPart(String(e.data));
     const audio = this.local?.getAudioTracks()[0] ?? null;
     const video = this.local?.getVideoTracks()[0] ?? null;
     this.senders.audio = pc.addTransceiver(audio ?? "audio", { direction: "sendonly", streams: this.local ? [this.local] : [] }).sender;
@@ -521,6 +521,36 @@ export class WebCall extends LitElement {
     await pc.setRemoteDescription(r.answer);
   }
 
+  /** Parts of a message from the media node (session descriptions come
+   * in parts of at most 16 KB). */
+  private parts: { id: string; got: string[] } | null = null;
+  /** Offers are taken one at a time. */
+  private signalling: Promise<void> = Promise.resolve();
+
+  private onPart(raw: string): void {
+    let part: { id?: string; part?: number; of?: number; data?: string };
+    try {
+      part = JSON.parse(raw) as typeof part;
+    } catch {
+      return;
+    }
+    const { id, part: i, of, data } = part;
+    if (typeof id !== "string" || typeof i !== "number" || typeof of !== "number" || typeof data !== "string" || of < 1 || of > 64 || i >= of) return;
+    if (!this.parts || this.parts.id !== id || this.parts.got.length !== of) this.parts = { id, got: new Array<string>(of).fill("") };
+    this.parts.got[i] = data;
+    if (this.parts.got.some((x) => x === "")) return;
+    const whole = this.parts.got.join("");
+    this.parts = null;
+    this.signalling = this.signalling.then(() => this.signal(whole)).catch(() => undefined);
+  }
+
+  private sendParts(text: string): void {
+    const id = Math.random().toString(36).slice(2, 10);
+    const size = 16 * 1024;
+    const of = Math.max(1, Math.ceil(text.length / size));
+    for (let i = 0; i < of; i++) this.channel?.send(JSON.stringify({ id, part: i, of, data: text.slice(i * size, (i + 1) * size) }));
+  }
+
   /** The media node offers others' tracks (or stops them); we answer. */
   private async signal(data: string): Promise<void> {
     const pc = this.pc;
@@ -530,7 +560,7 @@ export class WebCall extends LitElement {
     await pc.setRemoteDescription(msg);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    this.channel?.send(JSON.stringify({ type: "answer", sdp: answer.sdp }));
+    this.sendParts(JSON.stringify({ type: "answer", sdp: answer.sdp }));
   }
 
   private track(e: RTCTrackEvent): void {
@@ -601,6 +631,17 @@ export class WebCall extends LitElement {
     this.choosing = null;
     if (this.sharing) await this.stopScreen();
     await this.report({ doc });
+  }
+
+  /** What arrives: per sender, how many tracks carry media (for checks
+   * and a load test). */
+  async stats(): Promise<{ senders: number; flowing: number }> {
+    const report = await this.pc?.getStats();
+    let flowing = 0;
+    report?.forEach((r: { type?: string; bytesReceived?: number }) => {
+      if (r.type === "inbound-rtp" && (r.bytesReceived ?? 0) > 0) flowing++;
+    });
+    return { senders: this.remotes.size, flowing };
   }
 
   private mine(): SessionInfo | undefined {

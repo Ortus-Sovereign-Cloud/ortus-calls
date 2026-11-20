@@ -324,9 +324,30 @@ struct Client {
     session: String,
     rtc: Rtc,
     pending: Option<SdpPendingOffer>,
+    /// The offer waiting for its answer, and when it was last sent (sent
+    /// again if no answer comes).
+    sent: Option<(String, Instant)>,
+    /// Parts of a message from the browser, by message id.
+    parts: Option<(String, usize, Vec<String>)>,
     channel: Option<ChannelId>,
     tracks_in: Vec<TrackInEntry>,
     tracks_out: Vec<TrackOut>,
+}
+
+/// Session descriptions go over the data channel in parts of at most this
+/// many bytes (large messages were seen to go missing under load).
+const PART: usize = 16 * 1024;
+
+/// Writes a message in parts: {"id", "part", "of", "data"}.
+fn write_parts(channel: &mut str0m::channel::Channel<'_>, text: &str) {
+    let id = ortus_core::auth::random_hex(6);
+    let chars: Vec<char> = text.chars().collect();
+    let chunks: Vec<String> = chars.chunks(PART).map(|c| c.iter().collect()).collect();
+    let of = chunks.len().max(1);
+    for (i, data) in chunks.iter().enumerate() {
+        let part = json!({"id": id, "part": i, "of": of, "data": data}).to_string();
+        let _ = channel.write(false, part.as_bytes());
+    }
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -507,6 +528,8 @@ fn media_loop(
                         session,
                         rtc: *rtc,
                         pending: None,
+                        sent: None,
+                        parts: None,
                         channel: None,
                         tracks_in: Vec::new(),
                         tracks_out: Vec::new(),
@@ -547,14 +570,26 @@ fn media_loop(
                 }
             }
         }
-        if let Some((call, p)) = queue.pop_front() {
+        // Everything queued is forwarded, then every packet waiting is
+        // read: neither starves the other with many people sending.
+        let forwarded = !queue.is_empty();
+        while let Some((call, p)) = queue.pop_front() {
             propagate(&call, &p, &mut clients);
-            continue;
         }
-        let wait = timeout
-            .saturating_duration_since(Instant::now())
-            .max(Duration::from_millis(1));
-        if let Ok(packet) = net_rx.recv_timeout(wait) {
+        let wait = if forwarded {
+            Duration::ZERO
+        } else {
+            timeout
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(1))
+        };
+        let mut first = if wait.is_zero() {
+            net_rx.try_recv().ok()
+        } else {
+            net_rx.recv_timeout(wait).ok()
+        };
+        let mut read = 0;
+        while let Some(packet) = first.take() {
             if let Ok(contents) = packet.data.as_slice().try_into() {
                 let input = Input::Receive(
                     Instant::now(),
@@ -567,7 +602,20 @@ fn media_loop(
                 );
                 if let Some(c) = clients.iter_mut().find(|c| c.rtc.accepts(&input)) {
                     c.input(input);
+                    // Its output at once: str0m's queues are small, and a
+                    // burst of input left unpolled overflows them.
+                    while c.rtc.is_alive() {
+                        match c.poll_output(&wire) {
+                            Propagated::Timeout(_) => break,
+                            Propagated::Noop => {}
+                            p => queue.push_back((c.call.clone(), p)),
+                        }
+                    }
                 }
+            }
+            read += 1;
+            if read < 1000 {
+                first = net_rx.try_recv().ok();
             }
         }
         let now = Instant::now();
@@ -608,12 +656,15 @@ fn propagate(call: &str, p: &Propagated, clients: &mut [Client]) {
 
 impl Client {
     fn input(&mut self, input: Input) {
-        if self.rtc.is_alive() && self.rtc.handle_input(input).is_err() {
-            self.rtc.disconnect();
+        // A packet that cannot be taken is dropped (DTLS and SCTP send it
+        // again); the connection ends only when str0m ends it.
+        if self.rtc.is_alive() {
+            let _ = self.rtc.handle_input(input);
         }
     }
 
     fn poll_output(&mut self, wire: &Wire) -> Propagated {
+        self.resend();
         if self.negotiate() {
             return Propagated::Noop;
         }
@@ -742,16 +793,67 @@ impl Client {
         let Some(mut channel) = self.channel.and_then(|id| self.rtc.channel(id)) else {
             return false;
         };
-        let _ = channel.write(
-            false,
-            serde_json::to_string(&offer).unwrap_or_default().as_bytes(),
-        );
+        let text = serde_json::to_string(&offer).unwrap_or_default();
+        write_parts(&mut channel, &text);
+        self.sent = Some((text, Instant::now()));
         self.pending = Some(pending);
         true
     }
 
+    /// An offer with no answer for a while is sent again.
+    fn resend(&mut self) {
+        let Some((text, at)) = self.sent.as_ref() else {
+            return;
+        };
+        if at.elapsed() < Duration::from_secs(8) {
+            return;
+        }
+        let text = text.clone();
+        if let Some(mut channel) = self.channel.and_then(|id| self.rtc.channel(id)) {
+            write_parts(&mut channel, &text);
+        }
+        self.sent = Some((text, Instant::now()));
+    }
+
+    /// A part of a message from the browser; the whole message when the
+    /// last part has come.
     fn channel_data(&mut self, d: ChannelData) {
-        if let Ok(offer) = serde_json::from_slice::<SdpOffer>(&d.data) {
+        let Ok(part) = serde_json::from_slice::<Value>(&d.data) else {
+            return;
+        };
+        let (Some(id), Some(i), Some(of), Some(data)) = (
+            part["id"].as_str(),
+            part["part"].as_u64(),
+            part["of"].as_u64(),
+            part["data"].as_str(),
+        ) else {
+            return;
+        };
+        let (i, of) = (i as usize, of as usize);
+        if of == 0 || of > 64 || i >= of {
+            return;
+        }
+        if self
+            .parts
+            .as_ref()
+            .is_none_or(|(have, n, _)| have != id || *n != of)
+        {
+            self.parts = Some((id.to_string(), of, vec![String::new(); of]));
+        }
+        let Some((_, _, got)) = self.parts.as_mut() else {
+            return;
+        };
+        got[i] = data.to_string();
+        if got.iter().any(String::is_empty) {
+            return;
+        }
+        let whole = got.concat();
+        self.parts = None;
+        self.message(whole.as_bytes());
+    }
+
+    fn message(&mut self, data: &[u8]) {
+        if let Ok(offer) = serde_json::from_slice::<SdpOffer>(data) {
             // The browser added or removed its own tracks (a screen).
             let Ok(answer) = self.rtc.sdp_api().accept_offer(offer) else {
                 self.rtc.disconnect();
@@ -765,15 +867,14 @@ impl Client {
                 }
             }
             if let Some(mut channel) = self.channel.and_then(|id| self.rtc.channel(id)) {
-                let _ = channel.write(
-                    false,
-                    serde_json::to_string(&answer)
-                        .unwrap_or_default()
-                        .as_bytes(),
+                write_parts(
+                    &mut channel,
+                    &serde_json::to_string(&answer).unwrap_or_default(),
                 );
             }
-        } else if let Ok(answer) = serde_json::from_slice::<SdpAnswer>(&d.data) {
+        } else if let Ok(answer) = serde_json::from_slice::<SdpAnswer>(data) {
             if let Some(pending) = self.pending.take() {
+                self.sent = None;
                 if self.rtc.sdp_api().accept_answer(pending, answer).is_err() {
                     self.rtc.disconnect();
                     return;
