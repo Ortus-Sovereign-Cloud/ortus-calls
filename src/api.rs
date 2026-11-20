@@ -46,18 +46,28 @@ async fn room_of(instance: &Instance, user: &str, room: &str) -> Result<ChatRoom
 async fn call_json(instance: &Instance, call: &Call) -> Result<Value, ApiError> {
     let s = instance.store.as_ref();
     let sessions = store::sessions(s, &call.id).await?;
+    let notes = store::notes(s, &call.id).await?;
+    let actions = store::actions(s, &call.id).await?;
     let mut people = serde_json::Map::new();
-    for x in &sessions {
-        if !people.contains_key(&x.user) {
-            let name = ortus_core::auth::accounts::by_id(s, &x.user)
+    let who = sessions.iter().map(|x| x.user.clone()).chain(
+        notes.iter().chain(actions.iter()).filter_map(|v| {
+            v["user"]
+                .as_str()
+                .or(v["assignee"].as_str())
+                .map(str::to_string)
+        }),
+    );
+    for user in who {
+        if !people.contains_key(&user) {
+            let name = ortus_core::auth::accounts::by_id(s, &user)
                 .await?
                 .map(|u| u.name)
                 .unwrap_or_default();
-            people.insert(x.user.clone(), json!({"name": name}));
+            people.insert(user, json!({"name": name}));
         }
     }
     Ok(
-        json!({"id": call.id, "room": call.room, "startedAt": call.started_at, "sessions": sessions.iter().map(store::Session::json).collect::<Vec<_>>(), "people": people}),
+        json!({"id": call.id, "room": call.room, "startedAt": call.started_at, "sessions": sessions.iter().map(store::Session::json).collect::<Vec<_>>(), "people": people, "notes": notes, "actions": actions}),
     )
 }
 
@@ -233,6 +243,9 @@ struct State {
     #[serde(default, with = "double_option")]
     screen: Option<Option<String>>,
     hand: Option<bool>,
+    /// The document one presents (a Docs id), or null to stop.
+    #[serde(default, with = "double_option")]
+    doc: Option<Option<String>>,
 }
 
 mod double_option {
@@ -288,6 +301,20 @@ async fn state(
         )
         .await?;
     }
+    if let Some(doc) = input.doc {
+        let doc = doc.filter(|d| {
+            !d.is_empty()
+                && d.len() <= 64
+                && d.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        });
+        // One presents a document or a screen, not both.
+        tx.execute(
+            "UPDATE calls_sessions SET doc = $1 WHERE id = $2",
+            &[doc.into(), session.id.as_str().into()],
+        )
+        .await?;
+    }
     if let Some(h) = input.hand {
         let at: Option<i64> = h.then(store::now);
         tx.execute(
@@ -331,6 +358,114 @@ pub async fn left(instance: &Instance, session: &str, call: &Call) {
     }
 }
 
+#[derive(Deserialize)]
+struct Note {
+    text: String,
+}
+
+/// A line in the call's live notes.
+async fn note(
+    request: &Request,
+    params: &PathParams,
+    instance: &Arc<Instance>,
+) -> Result<Response, ApiError> {
+    let me = signed(request, instance).await?;
+    let (_, call) = my_session(instance, &me, params.get("session").unwrap_or_default()).await?;
+    let input: Note = body(request)?;
+    let text: String = input
+        .text
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(1000)
+        .collect();
+    if text.is_empty() {
+        return Err(ApiError::bad_request("Write something."));
+    }
+    let s = instance.store.as_ref();
+    let count = s
+        .query(
+            "SELECT COUNT(*) FROM calls_notes WHERE call = $1",
+            &[call.id.as_str().into()],
+        )
+        .await?
+        .first()
+        .and_then(|r| r.int(0))
+        .unwrap_or(0);
+    if count >= 1000 {
+        return Err(ApiError::conflict("The call has too many notes."));
+    }
+    s.execute(
+        "INSERT INTO calls_notes (id, call, user_id, text, at) VALUES ($1, $2, $3, $4, $5)",
+        &[
+            store::new_id("t").into(),
+            call.id.as_str().into(),
+            me.id.as_str().into(),
+            text.into(),
+            store::now().into(),
+        ],
+    )
+    .await?;
+    Ok(ok(&json!({"call": call_json(instance, &call).await?})))
+}
+
+#[derive(Deserialize)]
+struct Action {
+    title: String,
+    /// Who does it (a person in the call, by user id).
+    assignee: String,
+    /// When it is due (Unix ms).
+    due: Option<i64>,
+}
+
+/// An action item: a task (through the tasks app) for someone in the call.
+async fn action(
+    request: &Request,
+    params: &PathParams,
+    instance: &Arc<Instance>,
+) -> Result<Response, ApiError> {
+    let me = signed(request, instance).await?;
+    let (_, call) = my_session(instance, &me, params.get("session").unwrap_or_default()).await?;
+    let input: Action = body(request)?;
+    let title: String = input
+        .title
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(300)
+        .collect();
+    if title.is_empty() {
+        return Err(ApiError::bad_request("Say what is to be done."));
+    }
+    let s = instance.store.as_ref();
+    let room = room_of(instance, &me.id, &call.room).await?;
+    if !room.members.contains(&input.assignee) {
+        return Err(ApiError::bad_request(
+            "The task goes to someone in the room.",
+        ));
+    }
+    let tasks = instance
+        .services
+        .get::<dyn ortus_core::interfaces::Tasks>(&instance.switches)
+        .await
+        .map_err(|_| ApiError::not_installed("tasks"))?;
+    let from = ortus_core::interfaces::ItemRef {
+        app: "calls".into(),
+        id: call.id.clone(),
+        path: format!("/calls?room={}", call.room),
+    };
+    let task = tasks
+        .create(&me.id, &title, &input.assignee, input.due, Some(from))
+        .await
+        .map_err(ApiError::bad_request)?;
+    s.execute(
+        "INSERT INTO calls_actions (id, call, title, assignee, due, task_path, made_by, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        &[store::new_id("a").into(), call.id.as_str().into(), title.into(), input.assignee.as_str().into(), input.due.into(), task.path.into(), me.id.as_str().into(), store::now().into()],
+    )
+    .await?;
+    Ok(ok(&json!({"call": call_json(instance, &call).await?})))
+}
+
 macro_rules! with_params {
     ($name:ident, $f:ident) => {
         fn $name(
@@ -349,6 +484,8 @@ with_params!(h_join, join);
 with_params!(h_offer, offer);
 with_params!(h_state, state);
 with_params!(h_leave, leave);
+with_params!(h_note, note);
+with_params!(h_action, action);
 
 fn object() -> Value {
     json!({"type": "object"})
@@ -391,7 +528,7 @@ pub fn routes() -> Vec<Route> {
             Method::Post,
             "/calls/sessions/:session/state",
             "callsState",
-            "What one shows: {muted, camera, screen, hand}; also says one is still there.",
+            "What one shows: {muted, camera, screen, hand, doc}; also says one is still there.",
             h_state,
         ),
         route(
@@ -400,6 +537,20 @@ pub fn routes() -> Vec<Route> {
             "callsLeave",
             "Leaves the call.",
             h_leave,
+        ),
+        route(
+            Method::Post,
+            "/calls/sessions/:session/notes",
+            "callsNote",
+            "A line in the call's live notes: {text}.",
+            h_note,
+        ),
+        route(
+            Method::Post,
+            "/calls/sessions/:session/actions",
+            "callsAction",
+            "An action item: a task for someone in the room: {title, assignee, due}.",
+            h_action,
         ),
     ]
 }

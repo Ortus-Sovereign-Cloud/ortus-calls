@@ -20,6 +20,22 @@ interface SessionInfo {
   camera: boolean;
   screen: string | null;
   hand: number | null;
+  doc: string | null;
+}
+
+interface Note {
+  id: string;
+  user: string;
+  text: string;
+  at: number;
+}
+
+interface ActionItem {
+  id: string;
+  title: string;
+  assignee: string;
+  due: number | null;
+  path: string;
 }
 
 interface CallInfo {
@@ -28,6 +44,8 @@ interface CallInfo {
   startedAt: number;
   sessions: SessionInfo[];
   people: Record<string, { name: string }>;
+  notes: Note[];
+  actions: ActionItem[];
 }
 
 interface Remote {
@@ -278,6 +296,118 @@ export class WebCall extends LitElement {
     audio {
       display: none;
     }
+    .stage-doc {
+      flex: 1;
+      min-block-size: 480px;
+      display: flex;
+    }
+    .stage-doc ortus-docs-editor {
+      flex: 1;
+    }
+    .notes {
+      flex: 1;
+      padding: 20px;
+      border-radius: 18px;
+      background: #11131a;
+      border: 1px solid #1e2129;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .notes h3 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ortus-accent, #8ea2ff);
+    }
+    .lines p {
+      margin: 0 0 8px;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #c3c8d4;
+    }
+    .lines strong {
+      color: var(--ortus-text, #eceef3);
+    }
+    .input {
+      inline-size: 100%;
+      box-sizing: border-box;
+      padding-block: 8px;
+      padding-inline: 10px;
+      border-radius: 10px;
+      border: 1px solid #2a2e3a;
+      background: #0d0f15;
+      color: inherit;
+      font: inherit;
+      font-size: 14px;
+    }
+    .actions {
+      margin-block-start: auto;
+      padding-block: 14px;
+      padding-inline: 16px;
+      border-radius: 14px;
+      background: #161922;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .actions .label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ortus-text-3, #9198a8);
+    }
+    .actions a {
+      color: inherit;
+      text-decoration: none;
+    }
+    form.action {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    form.action .input:first-child {
+      grid-column: 1 / -1;
+    }
+    form.action .add {
+      grid-column: 1 / -1;
+      block-size: 34px;
+      border-radius: 10px;
+      border: 0;
+      background: #1e2230;
+      color: inherit;
+      cursor: pointer;
+    }
+    dialog {
+      position: fixed;
+      inset-block-start: 30%;
+      display: grid;
+      gap: 8px;
+      min-inline-size: 320px;
+      padding: 20px;
+      border-radius: 18px;
+      border: 1px solid #2a2e3a;
+      background: #171a23;
+      color: inherit;
+    }
+    dialog h2 {
+      margin: 0 0 6px;
+      font-size: 16px;
+    }
+    dialog button {
+      block-size: 40px;
+      border-radius: 12px;
+      border: 0;
+      background: #1e2230;
+      color: inherit;
+      text-align: start;
+      padding-inline: 14px;
+      cursor: pointer;
+    }
+    dialog .cancel {
+      background: none;
+      color: var(--ortus-text-3, #9198a8);
+    }
   `;
 
   private localize = new LocalizeController(this);
@@ -294,6 +424,10 @@ export class WebCall extends LitElement {
   @state() private noDevices = false;
   @state() private speaking = new Set<string>();
   @state() private version = 0;
+  /** Docs installed (a document can be presented), and its element loaded. */
+  @state() private docsInstalled = false;
+  @state() private docsReady = false;
+  @state() private choosing: { id: string; name: string }[] | null = null;
   private pc: RTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
   private local: MediaStream | null = null;
@@ -309,6 +443,9 @@ export class WebCall extends LitElement {
     this.room = new URLSearchParams(location.search).get("room") ?? "";
     void this.load();
     this.timers.push(window.setInterval(() => void this.load(), 3000));
+    call<{ apps: { id: string }[] }>("GET", "/apps")
+      .then((r) => (this.docsInstalled = r.apps.some((a) => a.id === "docs")))
+      .catch(() => undefined);
   }
 
   override disconnectedCallback(): void {
@@ -438,11 +575,77 @@ export class WebCall extends LitElement {
   }
 
   /** Says what this side shows (and that it is still here). */
-  private async report(): Promise<void> {
+  private async report(extra: Record<string, unknown> = {}): Promise<void> {
     if (!this.session) return;
     const screen = this.sharing ? (this.senders.screen?.mid ?? null) : null;
-    const r = await call<{ call: CallInfo }>("POST", `/calls/sessions/${encodeURIComponent(this.session)}/state`, { muted: this.muted, camera: this.camera, hand: this.hand, screen }).catch(() => null);
+    const r = await call<{ call: CallInfo }>("POST", `/calls/sessions/${encodeURIComponent(this.session)}/state`, { muted: this.muted, camera: this.camera, hand: this.hand, screen, ...extra }).catch(() => null);
     if (r) this.info = r.call;
+  }
+
+  /** "Share screen": the screen, or (with Docs) a document to present. */
+  private async share(): Promise<void> {
+    if (this.sharing || this.mine()?.doc) {
+      if (this.sharing) await this.stopScreen();
+      else await this.report({ doc: null });
+      return;
+    }
+    if (!this.docsInstalled) {
+      await this.toggleScreen();
+      return;
+    }
+    const r = await call<{ items: { id: string; name: string; mime: string }[] }>("GET", "/drive/items").catch(() => ({ items: [] }));
+    this.choosing = r.items.filter((i) => i.mime === "application/vnd.ortus.doc");
+  }
+
+  private async present(doc: string): Promise<void> {
+    this.choosing = null;
+    if (this.sharing) await this.stopScreen();
+    await this.report({ doc });
+  }
+
+  private mine(): SessionInfo | undefined {
+    return this.info?.sessions.find((s) => s.session === this.session);
+  }
+
+  private loadDocs(): void {
+    if (this.docsReady) return;
+    const url = "/assets/apps/docs/app.js";
+    void import(/* @vite-ignore */ url).then(() => (this.docsReady = true)).catch(() => undefined);
+  }
+
+  private async addNote(e: Event): Promise<void> {
+    e.preventDefault();
+    const field = (e.target as HTMLFormElement).elements.namedItem("note") as HTMLInputElement;
+    const text = field.value.trim();
+    if (!text) return;
+    const r = await call<{ call: CallInfo }>("POST", `/calls/sessions/${encodeURIComponent(this.session)}/notes`, { text }).catch((err) => ((this.error = String(err)), null));
+    if (r) {
+      this.info = r.call;
+      field.value = "";
+    }
+  }
+
+  private async addAction(e: Event): Promise<void> {
+    e.preventDefault();
+    const form = e.target as HTMLFormElement;
+    const title = (form.elements.namedItem("title") as HTMLInputElement).value.trim();
+    const assignee = (form.elements.namedItem("assignee") as HTMLSelectElement).value;
+    const time = (form.elements.namedItem("due") as HTMLInputElement).value;
+    if (!title || !assignee) return;
+    let due: number | null = null;
+    if (time) {
+      const [h, m] = time.split(":").map(Number);
+      const d = new Date();
+      d.setHours(h ?? 0, m ?? 0, 0, 0);
+      due = d.getTime();
+    }
+    try {
+      const r = await call<{ call: CallInfo }>("POST", `/calls/sessions/${encodeURIComponent(this.session)}/actions`, { title, assignee, due });
+      this.info = r.call;
+      form.reset();
+    } catch (err) {
+      this.error = err instanceof ApiError ? err.message : String(err);
+    }
   }
 
   private toggleMute(): void {
@@ -535,6 +738,13 @@ export class WebCall extends LitElement {
   }
 
   private stage(): TemplateResult {
+    const presentingDoc = this.info?.sessions.find((s) => s.doc);
+    if (presentingDoc?.doc) {
+      this.loadDocs();
+      const mine = presentingDoc.session === this.session;
+      return html`<div class="stage-head">${t(this.localize, "presenting", { who: mine ? t(this.localize, "you") : this.nameOf(presentingDoc) })}</div>
+        <div class="stage-doc">${this.docsReady ? html`<ortus-docs-editor embedded doc=${presentingDoc.doc}></ortus-docs-editor>` : nothing}</div>`;
+    }
     const presenter = this.info?.sessions.find((s) => s.screen);
     if (presenter) {
       const mine = presenter.session === this.session;
@@ -543,6 +753,30 @@ export class WebCall extends LitElement {
         <div class="stage-body">${track ? html`<video class="screen" autoplay playsinline muted .srcObject=${new MediaStream([track])}></video>` : nothing}</div>`;
     }
     return html`<div class="stage-body"><p class="empty"><strong>${t(this.localize, "nothingShown")}</strong>${t(this.localize, "nothingShownHint")}</p></div>`;
+  }
+
+  private notesPanel(): TemplateResult {
+    const info = this.info;
+    if (!info) return html``;
+    const name = (user: string): string => info.people[user]?.name ?? "";
+    const when = (ms: number): string => new Date(ms).toLocaleTimeString(document.documentElement.lang || undefined, { hour: "2-digit", minute: "2-digit" });
+    return html`<section class="notes" aria-label=${t(this.localize, "liveNotes")}>
+      <h3>${t(this.localize, "liveNotes")}</h3>
+      <div class="lines">${info.notes.map((n) => html`<p><strong>${name(n.user)}:</strong> ${n.text}</p>`)}</div>
+      <form @submit=${this.addNote}><input class="input" name="note" aria-label=${t(this.localize, "addNote")} placeholder=${t(this.localize, "addNote")} maxlength="1000" /></form>
+      <div class="actions">
+        <span class="label">${t(this.localize, "actionItems")}</span>
+        ${info.actions.map((a) => html`<a href=${a.path}>• ${a.title} — ${name(a.assignee)}${a.due ? `, ${when(a.due)}` : ""}</a>`)}
+        <form class="action" @submit=${this.addAction}>
+          <input class="input" name="title" aria-label=${t(this.localize, "actionTitle")} placeholder=${t(this.localize, "actionTitle")} maxlength="300" />
+          <select class="input" name="assignee" aria-label=${t(this.localize, "whoDoesIt")}>
+            ${[...new Set(info.sessions.map((s) => s.user))].map((u) => html`<option value=${u}>${name(u)}</option>`)}
+          </select>
+          <input class="input" type="time" name="due" aria-label=${t(this.localize, "dueAt")} />
+          <button class="add">${t(this.localize, "add")}</button>
+        </form>
+      </div>
+    </section>`;
   }
 
   override render(): TemplateResult {
@@ -559,6 +793,7 @@ export class WebCall extends LitElement {
         ? html`<div class="body">
               <section class="stage" aria-label=${t(this.localize, "shareScreen")}>${this.stage()}</section>
               <aside aria-label=${t(this.localize, "participants")}><div class="tiles">${sessions.map((s) => this.tile(s))}</div>
+                ${this.notesPanel()}
                 ${this.noDevices ? html`<p class="note">${t(this.localize, "noDevices")}</p>` : nothing}
                 ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
               </aside>
@@ -567,12 +802,20 @@ export class WebCall extends LitElement {
               <div class="bar" role="toolbar">
                 <button aria-pressed=${this.muted ? "true" : "false"} @click=${this.toggleMute}>${t(this.localize, this.muted ? "unmute" : "mute")}</button>
                 <button aria-pressed=${this.camera ? "false" : "true"} @click=${this.toggleCamera}>${t(this.localize, this.camera ? "camera" : "cameraOn")}</button>
-                <button aria-pressed=${this.sharing ? "true" : "false"} @click=${this.toggleScreen}>${t(this.localize, this.sharing ? "stopSharing" : "shareScreen")}</button>
+                <button aria-pressed=${this.sharing || this.mine()?.doc ? "true" : "false"} @click=${this.share}>${t(this.localize, this.sharing ? "stopSharing" : this.mine()?.doc ? "stopPresenting" : "shareScreen")}</button>
                 <button aria-pressed=${this.hand ? "true" : "false"} @click=${this.toggleHand}>${t(this.localize, this.hand ? "lowerHand" : "raiseHand")}</button>
                 <button class="leave" @click=${this.leave}>${t(this.localize, "leave")}</button>
               </div>
             </div>
-            ${audios}`
+            ${audios}
+            ${this.choosing
+              ? html`<dialog open aria-label=${t(this.localize, "presentWhat")}>
+                  <h2>${t(this.localize, "presentWhat")}</h2>
+                  <button class="choice" @click=${() => ((this.choosing = null), void this.toggleScreen())}>${t(this.localize, "yourScreen")}</button>
+                  ${this.choosing.map((d) => html`<button class="choice" @click=${() => this.present(d.id)}>${d.name}</button>`)}
+                  <button class="cancel" @click=${() => (this.choosing = null)}>${t(this.localize, "cancel")}</button>
+                </dialog>`
+              : nothing}`
         : html`<div class="join">
             ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
             ${this.room && !this.error.length

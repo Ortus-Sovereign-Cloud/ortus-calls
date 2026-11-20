@@ -28,6 +28,17 @@ const messages: Record<CallsKey, CallsMessage> = {
   callEnded: "Дзвінок завершено.",
   notFound: "Такої кімнати немає.",
   reconnecting: "З’єднання втрачено, повторне приєднання…",
+  liveNotes: "Нотатки наживо",
+  addNote: "Додати нотатку",
+  actionItems: "Завдання",
+  actionTitle: "Що треба зробити",
+  whoDoesIt: "Хто виконує",
+  dueAt: "Термін",
+  add: "Додати",
+  presentWhat: "Що показати",
+  yourScreen: "Ваш екран",
+  stopPresenting: "Припинити показ",
+  cancel: "Скасувати",
 };
 
 export default messages;

@@ -57,6 +57,27 @@ impl App for Calls {
         }]
     }
 
+    // A person forgotten: their notes go; their part in calls is anonymous.
+    fn forget_user<'a>(
+        &'a self,
+        tx: &'a mut dyn ortus_core::storage::AsyncTx,
+        user_id: &'a str,
+        _rules: &'a ortus_core::retention::Rules,
+    ) -> ortus_core::storage::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            for sql in [
+                "DELETE FROM calls_notes WHERE user_id = $1",
+                "UPDATE calls_sessions SET user_id = '' WHERE user_id = $1",
+                "UPDATE calls_calls SET started_by = '' WHERE started_by = $1",
+            ] {
+                tx.execute(sql, &[user_id.into()])
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+    }
+
     fn periodic(&self) -> Vec<(&'static str, i64)> {
         vec![(SWEEP_JOB, 10_000)]
     }

@@ -226,6 +226,71 @@ fn a_rooms_call_from_start_to_end() {
             "{name}"
         );
 
+        // A document presented; notes; action items for people in the room.
+        let (_, presented) = call(
+            &client,
+            &olena,
+            "POST",
+            &format!("/calls/sessions/{her_session}/state"),
+            Some(json!({"doc": "d123"})),
+        );
+        assert!(
+            presented["call"]["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["doc"] == "d123"),
+            "{name}"
+        );
+        let (status, noted) = call(
+            &client,
+            &marek,
+            "POST",
+            &format!("/calls/sessions/{his_session}/notes"),
+            Some(json!({"text": "District 4 is at 92%"})),
+        );
+        assert_eq!(200, status, "{name}");
+        assert_eq!(
+            "District 4 is at 92%", noted["call"]["notes"][0]["text"],
+            "{name}"
+        );
+        let marek_id = id_of("marek@ministry.example");
+        let (status, acted) = call(
+            &client,
+            &olena,
+            "POST",
+            &format!("/calls/sessions/{her_session}/actions"),
+            Some(json!({"title": "Bus escort", "assignee": marek_id, "due": 1_800_000_000_000i64})),
+        );
+        assert_eq!(200, status, "{name}: {acted}");
+        assert_eq!("Bus escort", acted["call"]["actions"][0]["title"], "{name}");
+        assert!(acted["call"]["people"].get(&marek_id).is_some(), "{name}");
+        let anna_id = id_of("anna@ministry.example");
+        assert_eq!(
+            400,
+            call(
+                &client,
+                &olena,
+                "POST",
+                &format!("/calls/sessions/{her_session}/actions"),
+                Some(json!({"title": "x", "assignee": anna_id}))
+            )
+            .0,
+            "{name}: not in the room"
+        );
+        assert_eq!(
+            400,
+            call(
+                &client,
+                &olena,
+                "POST",
+                &format!("/calls/sessions/{her_session}/notes"),
+                Some(json!({"text": "  "}))
+            )
+            .0,
+            "{name}"
+        );
+
         // A browser's offer: the media node answers, with where to send.
         let (status, answered) = call(
             &client,

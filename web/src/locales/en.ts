@@ -29,6 +29,17 @@ const en = {
   callEnded: "The call has ended.",
   notFound: "There is no such room.",
   reconnecting: "Connection lost, joining again…",
+  liveNotes: "Live notes",
+  addNote: "Add a note",
+  actionItems: "Action items",
+  actionTitle: "What is to be done",
+  whoDoesIt: "Who does it",
+  dueAt: "Due",
+  add: "Add",
+  presentWhat: "What to show",
+  yourScreen: "Your screen",
+  stopPresenting: "Stop presenting",
+  cancel: "Cancel",
 };
 
 export type CallsKey = keyof typeof en;

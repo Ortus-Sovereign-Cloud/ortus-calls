@@ -49,6 +49,11 @@ test("two people meet in a room's call", async ({ page, browser }) => {
   await expect(hers.getByText(en.muted)).toBeVisible({ timeout: 15_000 });
   await expect(hers.getByRole("img", { name: en.handRaised })).toBeVisible();
 
+  // A live note from Olena reaches Marek.
+  await olena.getByLabel(en.addNote).fill("District 4 is at 92%, we need the school by tonight.");
+  await olena.getByLabel(en.addNote).press("Enter");
+  await expect(his.getByText("District 4 is at 92%, we need the school by tonight.")).toBeVisible({ timeout: 15_000 });
+
   // Olena shares her screen: Marek sees it on the stage.
   await olena.getByRole("button", { name: en.shareScreen }).click();
   await expect(his.getByText(en.presenting.replace("{who}", "Olena Hrytsenko"))).toBeVisible({ timeout: 15_000 });

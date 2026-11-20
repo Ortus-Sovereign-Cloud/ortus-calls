@@ -7,10 +7,11 @@
 use ortus_core::storage::{AsyncStore, AsyncTx, Migration, StoreResult};
 use serde_json::{json, Value};
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "media nodes, calls, sessions",
-    sql: "CREATE TABLE calls_nodes (
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "media nodes, calls, sessions",
+        sql: "CREATE TABLE calls_nodes (
         id TEXT PRIMARY KEY,
         signal TEXT NOT NULL,
         token_sealed TEXT NOT NULL,
@@ -38,7 +39,32 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
         hand BIGINT
     );
     CREATE INDEX calls_sessions_call ON calls_sessions (call, left_at)",
-}];
+    },
+    Migration {
+        version: 2,
+        name: "a document presented, live notes, action items",
+        sql: "ALTER TABLE calls_sessions ADD COLUMN doc TEXT;
+    CREATE TABLE calls_notes (
+        id TEXT PRIMARY KEY,
+        call TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        at BIGINT NOT NULL
+    );
+    CREATE INDEX calls_notes_call ON calls_notes (call, at);
+    CREATE TABLE calls_actions (
+        id TEXT PRIMARY KEY,
+        call TEXT NOT NULL,
+        title TEXT NOT NULL,
+        assignee TEXT NOT NULL,
+        due BIGINT,
+        task_path TEXT NOT NULL,
+        made_by TEXT NOT NULL,
+        at BIGINT NOT NULL
+    );
+    CREATE INDEX calls_actions_call ON calls_actions (call, at)",
+    },
+];
 
 /// A session not heard from for this long has left.
 pub const STALE_MS: i64 = 30_000;
@@ -74,11 +100,13 @@ pub struct Session {
     pub camera: bool,
     pub screen: Option<String>,
     pub hand: Option<i64>,
+    /// The document this person presents (a Docs document id).
+    pub doc: Option<String>,
 }
 
 impl Session {
     pub fn json(&self) -> Value {
-        json!({"session": self.id, "user": self.user, "joinedAt": self.joined_at, "muted": self.muted, "camera": self.camera, "screen": self.screen, "hand": self.hand})
+        json!({"session": self.id, "user": self.user, "joinedAt": self.joined_at, "muted": self.muted, "camera": self.camera, "screen": self.screen, "hand": self.hand, "doc": self.doc})
     }
 }
 
@@ -113,7 +141,7 @@ pub async fn call(s: &dyn AsyncStore, id: &str) -> StoreResult<Option<Call>> {
 }
 
 const SESSION: &str =
-    "SELECT id, call, user_id, joined_at, muted, camera, screen, hand FROM calls_sessions";
+    "SELECT id, call, user_id, joined_at, muted, camera, screen, hand, doc FROM calls_sessions";
 
 fn session_of(r: &ortus_core::storage::Row) -> Session {
     Session {
@@ -125,6 +153,7 @@ fn session_of(r: &ortus_core::storage::Row) -> Session {
         camera: r.int(5).unwrap_or(0) != 0,
         screen: r.text(6).map(str::to_string),
         hand: r.int(7),
+        doc: r.text(8).map(str::to_string),
     }
 }
 
@@ -195,6 +224,7 @@ pub async fn add_session(tx: &mut dyn AsyncTx, call: &str, user: &str) -> StoreR
         camera: true,
         screen: None,
         hand: None,
+        doc: None,
     };
     tx.execute(
         "INSERT INTO calls_sessions (id, call, user_id, joined_at, seen_at, muted, camera) VALUES ($1, $2, $3, $4, $4, 0, 1)",
@@ -243,4 +273,21 @@ pub async fn node(s: &dyn AsyncStore, id: &str) -> StoreResult<Option<(String, S
             r.text(1).unwrap_or_default().to_string(),
         )
     }))
+}
+
+/// A call's live notes (the latest), oldest first.
+pub async fn notes(s: &dyn AsyncStore, call: &str) -> StoreResult<Vec<Value>> {
+    let rows = s.query("SELECT id, user_id, text, at FROM calls_notes WHERE call = $1 ORDER BY at DESC, id DESC LIMIT 50", &[call.into()]).await?;
+    let mut out: Vec<Value> = rows
+        .iter()
+        .map(|r| json!({"id": r.text(0), "user": r.text(1), "text": r.text(2), "at": r.int(3)}))
+        .collect();
+    out.reverse();
+    Ok(out)
+}
+
+/// A call's action items (tasks made in it).
+pub async fn actions(s: &dyn AsyncStore, call: &str) -> StoreResult<Vec<Value>> {
+    let rows = s.query("SELECT id, title, assignee, due, task_path FROM calls_actions WHERE call = $1 ORDER BY at, id LIMIT 100", &[call.into()]).await?;
+    Ok(rows.iter().map(|r| json!({"id": r.text(0), "title": r.text(1), "assignee": r.text(2), "due": r.int(3), "path": r.text(4)})).collect())
 }

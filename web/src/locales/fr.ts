@@ -28,6 +28,17 @@ const messages: Record<CallsKey, CallsMessage> = {
   callEnded: "L'appel est terminé.",
   notFound: "Ce salon n'existe pas.",
   reconnecting: "Connexion perdue, nouvelle tentative…",
+  liveNotes: "Notes en direct",
+  addNote: "Ajouter une note",
+  actionItems: "Actions",
+  actionTitle: "Ce qui est à faire",
+  whoDoesIt: "Qui le fait",
+  dueAt: "Échéance",
+  add: "Ajouter",
+  presentWhat: "Que montrer",
+  yourScreen: "Votre écran",
+  stopPresenting: "Arrêter de présenter",
+  cancel: "Annuler",
 };
 
 export default messages;

@@ -52,6 +52,8 @@ fn assemble(store: Arc<dyn AsyncStore>, files: Files) -> Arc<Instance> {
     let instance = Instance::assemble(config, store, Arc::new(files), apps, Keyring::for_tests());
     let chat: Arc<dyn ortus_core::interfaces::Chat> = Arc::new(FakeChat::default());
     instance.services.provide("chat", chat);
+    let tasks: Arc<dyn ortus_core::interfaces::Tasks> = Arc::new(FakeTasks);
+    instance.services.provide("tasks", tasks);
     instance
 }
 
@@ -186,4 +188,27 @@ fn dir_leak() -> std::path::PathBuf {
     let path = d.0.clone();
     std::mem::forget(d);
     path
+}
+
+/// Tasks for the tests: each one made is a path with its title.
+pub struct FakeTasks;
+
+impl ortus_core::interfaces::Tasks for FakeTasks {
+    fn create<'a>(
+        &'a self,
+        _user: &'a str,
+        title: &'a str,
+        assignee: &'a str,
+        _due: Option<i64>,
+        from: Option<ortus_core::interfaces::ItemRef>,
+    ) -> ortus_core::storage::BoxFuture<'a, Result<ortus_core::interfaces::ItemRef, String>> {
+        Box::pin(async move {
+            assert_eq!(Some("calls"), from.as_ref().map(|f| f.app.as_str()));
+            Ok(ortus_core::interfaces::ItemRef {
+                app: "tasks".into(),
+                id: format!("{title}-{assignee}"),
+                path: format!("/tasks?task={}", title.len()),
+            })
+        })
+    }
 }

@@ -28,6 +28,17 @@ const messages: Record<CallsKey, CallsMessage> = {
   callEnded: "انتهت المكالمة.",
   notFound: "لا توجد غرفة كهذه.",
   reconnecting: "انقطع الاتصال، جارٍ الانضمام مجددًا…",
+  liveNotes: "ملاحظات مباشرة",
+  addNote: "أضف ملاحظة",
+  actionItems: "المهام",
+  actionTitle: "ما يجب فعله",
+  whoDoesIt: "من يقوم به",
+  dueAt: "الموعد",
+  add: "إضافة",
+  presentWhat: "ماذا تعرض",
+  yourScreen: "شاشتك",
+  stopPresenting: "إيقاف العرض",
+  cancel: "إلغاء",
 };
 
 export default messages;

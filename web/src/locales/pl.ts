@@ -28,6 +28,17 @@ const messages: Record<CallsKey, CallsMessage> = {
   callEnded: "Rozmowa się zakończyła.",
   notFound: "Nie ma takiego pokoju.",
   reconnecting: "Utracono połączenie, ponowne dołączanie…",
+  liveNotes: "Notatki na żywo",
+  addNote: "Dodaj notatkę",
+  actionItems: "Zadania",
+  actionTitle: "Co trzeba zrobić",
+  whoDoesIt: "Kto to zrobi",
+  dueAt: "Termin",
+  add: "Dodaj",
+  presentWhat: "Co pokazać",
+  yourScreen: "Twój ekran",
+  stopPresenting: "Zakończ prezentację",
+  cancel: "Anuluj",
 };
 
 export default messages;
