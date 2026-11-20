@@ -414,6 +414,8 @@ export class WebCall extends LitElement {
   @state() private room = "";
   @state() private name = "";
   @state() private info: CallInfo | null = null;
+  /** An end-to-end room: calls are not end to end yet, so none there. */
+  @state() private sealed = false;
   @state() private session = "";
   @state() private joining = false;
   @state() private error = "";
@@ -457,9 +459,13 @@ export class WebCall extends LitElement {
 
   private async load(): Promise<void> {
     if (!this.room) return;
+    // An answer to a poll sent before joining knows nothing of the session.
+    const asked = this.session;
     try {
-      const r = await call<{ call: CallInfo | null; name: string }>("GET", `/calls/rooms/${encodeURIComponent(this.room)}`);
+      const r = await call<{ call: CallInfo | null; name: string; encrypted: boolean }>("GET", `/calls/rooms/${encodeURIComponent(this.room)}`);
+      if (this.session !== asked) return;
       this.name = r.name;
+      this.sealed = r.encrypted;
       this.info = r.call;
       if (this.session && (!r.call || !r.call.sessions.some((s) => s.session === this.session))) {
         // Our part ended (the media node went, or we were away too long).
@@ -510,10 +516,19 @@ export class WebCall extends LitElement {
     const video = this.local?.getVideoTracks()[0] ?? null;
     this.senders.audio = pc.addTransceiver(audio ?? "audio", { direction: "sendonly", streams: this.local ? [this.local] : [] }).sender;
     this.senders.camera = pc.addTransceiver(video ?? "video", { direction: "sendonly", streams: this.local ? [this.local] : [] }).sender;
-    this.senders.screen = pc.addTransceiver("video", { direction: "sendonly" });
+    this.senders.screen = pc.addTransceiver(this.screenStream?.getVideoTracks()[0] ?? "video", { direction: "sendonly" });
     pc.ontrack = (e) => this.track(e);
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") this.error = t(this.localize, "reconnecting");
+      if (pc.connectionState === "connected" && this.pc === pc) this.error = "";
+      if (pc.connectionState !== "failed" || this.pc !== pc) return;
+      // The network changed: a new connection on the same session (the
+      // node replaces the old one), the same tracks.
+      this.error = t(this.localize, "reconnecting");
+      window.setTimeout(() => {
+        if (this.pc !== pc || !this.session) return;
+        pc.close();
+        this.connect().catch(() => undefined);
+      }, 1000);
     };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -555,12 +570,13 @@ export class WebCall extends LitElement {
   private async signal(data: string): Promise<void> {
     const pc = this.pc;
     if (!pc) return;
-    const msg = JSON.parse(data) as RTCSessionDescriptionInit;
+    const msg = JSON.parse(data) as RTCSessionDescriptionInit & { n?: number };
     if (msg.type !== "offer") return;
-    await pc.setRemoteDescription(msg);
+    await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    this.sendParts(JSON.stringify({ type: "answer", sdp: answer.sdp }));
+    // The offer's number goes back with the answer.
+    this.sendParts(JSON.stringify({ type: "answer", sdp: answer.sdp, n: msg.n }));
   }
 
   private track(e: RTCTrackEvent): void {
@@ -859,7 +875,8 @@ export class WebCall extends LitElement {
               : nothing}`
         : html`<div class="join">
             ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
-            ${this.room && !this.error.length
+            ${this.sealed ? html`<p class="note">${t(this.localize, "notInSealed")}</p>` : nothing}
+            ${this.room && !this.error.length && !this.sealed
               ? html`<button ?disabled=${this.joining} @click=${this.join}>${this.joining ? t(this.localize, "joining") : t(this.localize, sessions.length ? "joinCall" : "startCall")}</button>`
               : nothing}
           </div>`}

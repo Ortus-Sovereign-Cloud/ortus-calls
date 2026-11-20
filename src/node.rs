@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::sync::Mutex;
 use std::sync::{Arc, Weak};
@@ -332,7 +332,14 @@ struct Client {
     channel: Option<ChannelId>,
     tracks_in: Vec<TrackInEntry>,
     tracks_out: Vec<TrackOut>,
+    /// Since when its connection has been lost (it ends after `GRACE`).
+    lost: Option<Instant>,
+    /// Offers made to the browser (the last one's number).
+    offers: u64,
 }
+
+/// How long a lost connection may take to come back.
+const GRACE: Duration = Duration::from_secs(20);
 
 /// Session descriptions go over the data channel in parts of at most this
 /// many bytes (large messages were seen to go missing under load).
@@ -369,20 +376,44 @@ struct Packet {
 
 /// Where the loop sends: the UDP socket, and the open TCP connections by
 /// their remote address.
+/// One ICE-over-TCP connection: frames to write go through a bounded
+/// queue to its own writer thread (a slow reader never stalls the media
+/// loop; frames that do not fit are dropped, as UDP would). `live` turns
+/// true once a call's connection takes its packets; one that is not live
+/// within `PROVE` is closed.
+struct Conn {
+    out: SyncSender<Vec<u8>>,
+    live: Arc<std::sync::atomic::AtomicBool>,
+}
+
+type Conns = Arc<Mutex<HashMap<SocketAddr, Conn>>>;
+
 struct Wire {
     udp: UdpSocket,
-    tcp: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
+    tcp: Conns,
 }
 
 impl Wire {
+    /// A call's connection took a packet from this TCP peer.
+    fn proven(&self, peer: SocketAddr) {
+        if let Some(c) = self
+            .tcp
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&peer)
+        {
+            c.live.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     fn send(&self, proto: Protocol, destination: SocketAddr, data: &[u8]) {
         match proto {
             Protocol::Udp => {
                 let _ = self.udp.send_to(data, destination);
             }
             Protocol::Tcp => {
-                let mut conns = self.tcp.lock().unwrap_or_else(|e| e.into_inner());
-                let Some(conn) = conns.get_mut(&destination) else {
+                let conns = self.tcp.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(conn) = conns.get(&destination) else {
                     return;
                 };
                 let Ok(len) = u16::try_from(data.len()) else {
@@ -391,9 +422,7 @@ impl Wire {
                 let mut framed = Vec::with_capacity(data.len() + 2);
                 framed.extend_from_slice(&len.to_be_bytes());
                 framed.extend_from_slice(data);
-                if conn.write_all(&framed).is_err() {
-                    conns.remove(&destination);
-                }
+                let _ = conn.out.try_send(framed);
             }
             _ => {}
         }
@@ -401,19 +430,29 @@ impl Wire {
 }
 
 const MAX_TCP: usize = 500;
+/// TCP connections from one address (an office behind one NAT shares it;
+/// a connection that starts no call goes after `PROVE`).
+const MAX_TCP_PER_IP: usize = 64;
+/// How long a TCP connection has to start a call's connection.
+const PROVE: Duration = Duration::from_secs(10);
+/// Frames queued for one TCP connection.
+const TCP_QUEUE: usize = 512;
 
 /// Reads UDP packets into the loop's channel.
+/// Packets are given to str0m as sent to `public`, the address its host
+/// candidate names (a socket bound to 0.0.0.0, or behind NAT, has another
+/// local address, and str0m drops checks to an address it does not know).
 fn udp_reader(
     socket: UdpSocket,
+    public: SocketAddr,
     out: SyncSender<Packet>,
     running: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let local = socket.local_addr().ok();
+    let destination = public;
     let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
     let mut buf = vec![0u8; 2000];
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         if let Ok((n, source)) = socket.recv_from(&mut buf) {
-            let Some(destination) = local else { continue };
             let _ = out.try_send(Packet {
                 proto: Protocol::Udp,
                 source,
@@ -428,29 +467,49 @@ fn udp_reader(
 /// loop's channel.
 fn tcp_acceptor(
     listener: TcpListener,
+    public: SocketAddr,
     out: SyncSender<Packet>,
-    conns: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
+    conns: Conns,
     running: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let local = listener.local_addr().ok();
+    let destination = public;
     let _ = listener.set_nonblocking(true);
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         match listener.accept() {
             Ok((conn, peer)) => {
-                let Some(destination) = local else { continue };
-                if conns.lock().unwrap_or_else(|e| e.into_inner()).len() >= MAX_TCP {
-                    continue;
+                {
+                    let all = conns.lock().unwrap_or_else(|e| e.into_inner());
+                    let same = all.keys().filter(|a| a.ip() == peer.ip()).count();
+                    if all.len() >= MAX_TCP || same >= MAX_TCP_PER_IP {
+                        continue;
+                    }
                 }
                 let _ = conn.set_nonblocking(false);
                 let _ = conn.set_nodelay(true);
-                let _ = conn.set_write_timeout(Some(Duration::from_secs(1)));
-                let Ok(writer) = conn.try_clone() else {
+                let _ = conn.set_write_timeout(Some(Duration::from_secs(5)));
+                let Ok(mut writer) = conn.try_clone() else {
                     continue;
                 };
-                conns
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(peer, writer);
+                let (tx, frames) = std::sync::mpsc::sync_channel::<Vec<u8>>(TCP_QUEUE);
+                let live = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                conns.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                    peer,
+                    Conn {
+                        out: tx,
+                        live: Arc::clone(&live),
+                    },
+                );
+                let _ = std::thread::Builder::new()
+                    .name("ortus-media-tcp-write".into())
+                    .spawn(move || {
+                        // Ends when the connection's entry (the sender) goes.
+                        while let Ok(frame) = frames.recv() {
+                            if writer.write_all(&frame).is_err() {
+                                let _ = writer.shutdown(std::net::Shutdown::Both);
+                                break;
+                            }
+                        }
+                    });
                 let out = out.clone();
                 let conns = Arc::clone(&conns);
                 let running = Arc::clone(&running);
@@ -458,15 +517,29 @@ fn tcp_acceptor(
                     .name("ortus-media-tcp".into())
                     .spawn(move || {
                         let mut conn = conn;
-                        let _ = conn.set_read_timeout(Some(Duration::from_secs(60)));
+                        let opened = Instant::now();
                         let mut len = [0u8; 2];
                         while running.load(std::sync::atomic::Ordering::SeqCst) {
+                            let proven = live.load(std::sync::atomic::Ordering::SeqCst);
+                            if !proven && opened.elapsed() > PROVE {
+                                break;
+                            }
+                            let wait = if proven {
+                                Duration::from_secs(60)
+                            } else {
+                                PROVE
+                            };
+                            let _ = conn.set_read_timeout(Some(wait));
                             if conn.read_exact(&mut len).is_err() {
                                 break;
                             }
-                            let mut data = vec![0u8; u16::from_be_bytes(len) as usize];
+                            let size = u16::from_be_bytes(len) as usize;
+                            let mut data = vec![0u8; size];
                             if conn.read_exact(&mut data).is_err() {
                                 break;
+                            }
+                            if size == 0 {
+                                continue;
                             }
                             let _ = out.try_send(Packet {
                                 proto: Protocol::Tcp,
@@ -475,6 +548,7 @@ fn tcp_acceptor(
                                 data,
                             });
                         }
+                        let _ = conn.shutdown(std::net::Shutdown::Both);
                         conns
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -496,25 +570,29 @@ fn media_loop(
     let mut clients: Vec<Client> = Vec::new();
     let mut queue: VecDeque<(String, Propagated)> = VecDeque::new();
     let mut next_id = 0u64;
-    let _ = public;
     let (net_tx, net_rx) = std::sync::mpsc::sync_channel::<Packet>(8192);
-    let conns: Arc<Mutex<HashMap<SocketAddr, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
+    let conns: Conns = Arc::new(Mutex::new(HashMap::new()));
     let Ok(reader) = udp.try_clone() else { return };
     {
         let (out, running) = (net_tx.clone(), Arc::clone(&running));
         let _ = std::thread::Builder::new()
             .name("ortus-media-udp".into())
-            .spawn(move || udp_reader(reader, out, running));
+            .spawn(move || udp_reader(reader, public, out, running));
     }
     if let Some(listener) = tcp {
         let (out, conns, running) = (net_tx.clone(), Arc::clone(&conns), Arc::clone(&running));
         let _ = std::thread::Builder::new()
             .name("ortus-media-tcp-accept".into())
-            .spawn(move || tcp_acceptor(listener, out, conns, running));
+            .spawn(move || tcp_acceptor(listener, public, out, conns, running));
     }
     drop(net_tx);
     let wire = Wire { udp, tcp: conns };
     while running.load(std::sync::atomic::Ordering::SeqCst) {
+        for c in clients.iter_mut() {
+            if c.lost.is_some_and(|t| t.elapsed() > GRACE) {
+                c.rtc.disconnect();
+            }
+        }
         clients.retain(|c| c.rtc.is_alive());
         loop {
             match rx.try_recv() {
@@ -533,6 +611,8 @@ fn media_loop(
                         channel: None,
                         tracks_in: Vec::new(),
                         tracks_out: Vec::new(),
+                        lost: None,
+                        offers: 0,
                     };
                     for other in clients.iter().filter(|c| c.call == call) {
                         for t in &other.tracks_in {
@@ -601,6 +681,9 @@ fn media_loop(
                     },
                 );
                 if let Some(c) = clients.iter_mut().find(|c| c.rtc.accepts(&input)) {
+                    if packet.proto == Protocol::Tcp {
+                        wire.proven(packet.source);
+                    }
                     c.input(input);
                     // Its output at once: str0m's queues are small, and a
                     // burst of input left unpolled overflows them.
@@ -676,7 +759,13 @@ impl Client {
             Ok(Output::Timeout(t)) => Propagated::Timeout(t),
             Ok(Output::Event(e)) => match e {
                 Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
-                    self.rtc.disconnect();
+                    // A network change (Wi-Fi to mobile) often recovers;
+                    // the browser offers again on the same session if not.
+                    self.lost.get_or_insert_with(Instant::now);
+                    Propagated::Noop
+                }
+                Event::IceConnectionStateChange(_) => {
+                    self.lost = None;
                     Propagated::Noop
                 }
                 Event::MediaAdded(m) => {
@@ -793,7 +882,12 @@ impl Client {
         let Some(mut channel) = self.channel.and_then(|id| self.rtc.channel(id)) else {
             return false;
         };
-        let text = serde_json::to_string(&offer).unwrap_or_default();
+        // Numbered: the browser's answer names it, so an answer to an
+        // offer sent again late is told from the answer to this one.
+        self.offers += 1;
+        let mut tagged = serde_json::to_value(&offer).unwrap_or_default();
+        tagged["n"] = self.offers.into();
+        let text = tagged.to_string();
         write_parts(&mut channel, &text);
         self.sent = Some((text, Instant::now()));
         self.pending = Some(pending);
@@ -853,7 +947,14 @@ impl Client {
     }
 
     fn message(&mut self, data: &[u8]) {
-        if let Ok(offer) = serde_json::from_slice::<SdpOffer>(data) {
+        let Ok(mut value) = serde_json::from_slice::<Value>(data) else {
+            return;
+        };
+        let n = value
+            .as_object_mut()
+            .and_then(|o| o.remove("n"))
+            .and_then(|n| n.as_u64());
+        if let Ok(offer) = serde_json::from_value::<SdpOffer>(value.clone()) {
             // The browser added or removed its own tracks (a screen).
             let Ok(answer) = self.rtc.sdp_api().accept_offer(offer) else {
                 self.rtc.disconnect();
@@ -872,7 +973,11 @@ impl Client {
                     &serde_json::to_string(&answer).unwrap_or_default(),
                 );
             }
-        } else if let Ok(answer) = serde_json::from_slice::<SdpAnswer>(data) {
+        } else if let Ok(answer) = serde_json::from_value::<SdpAnswer>(value) {
+            if n != Some(self.offers) {
+                // An answer to an offer that has been answered already.
+                return;
+            }
             if let Some(pending) = self.pending.take() {
                 self.sent = None;
                 if self.rtc.sdp_api().accept_answer(pending, answer).is_err() {

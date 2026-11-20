@@ -69,6 +69,8 @@ impl App for Calls {
                 "DELETE FROM calls_notes WHERE user_id = $1",
                 "UPDATE calls_sessions SET user_id = '' WHERE user_id = $1",
                 "UPDATE calls_calls SET started_by = '' WHERE started_by = $1",
+                "UPDATE calls_actions SET assignee = '' WHERE assignee = $1",
+                "UPDATE calls_actions SET made_by = '' WHERE made_by = $1",
             ] {
                 tx.execute(sql, &[user_id.into()])
                     .await

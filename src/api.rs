@@ -95,14 +95,34 @@ async fn join(
 ) -> Result<Response, ApiError> {
     let me = signed(request, instance).await?;
     let room = room_of(instance, &me.id, params.get("room").unwrap_or_default()).await?;
+    if room.encrypted {
+        // The media node would hear what the room keeps from the server.
+        return Err(ApiError::conflict(
+            "Calls are not end to end yet, so an end-to-end room has none.",
+        ));
+    }
     let s = instance.store.as_ref();
     let node = store::pick_node(s).await?.ok_or_else(|| ApiError {
         status: 409,
         code: "no_media",
         message: "No media server is running.".into(),
     })?;
-    let mut tx = s.begin().await?;
-    let (call, started) = store::start_or_join(tx.as_mut(), &room.id, &node, &me.id).await?;
+    // Two first joins at once (PostgreSQL): the unique index lets one
+    // start the call; the other tries again and joins it.
+    let mut attempt = 0;
+    let (mut tx, call, started) = loop {
+        let mut tx = s.begin().await?;
+        match store::start_or_join(tx.as_mut(), &room.id, &node, &me.id).await {
+            Ok((call, started)) => break (tx, call, started),
+            Err(e) => {
+                let _ = tx.rollback().await;
+                attempt += 1;
+                if attempt >= 3 {
+                    return Err(e.into());
+                }
+            }
+        }
+    };
     // Counted inside the transaction (a store query while it is open
     // would wait for it on SQLite).
     let present = tx
@@ -153,6 +173,9 @@ async fn my_session(
     let call = store::call(s, &session.call)
         .await?
         .ok_or_else(|| ApiError::not_found("There is no such call."))?;
+    // Still in the room: someone taken out of it is out of its call (their
+    // heartbeat fails, and the sweep ends their part).
+    room_of(instance, &me.id, &call.room).await?;
     Ok((session, call))
 }
 
@@ -438,6 +461,18 @@ async fn action(
         return Err(ApiError::bad_request("Say what is to be done."));
     }
     let s = instance.store.as_ref();
+    let made = s
+        .query(
+            "SELECT COUNT(*) FROM calls_actions WHERE call = $1",
+            &[call.id.as_str().into()],
+        )
+        .await?
+        .first()
+        .and_then(|r| r.int(0))
+        .unwrap_or(0);
+    if made >= 200 {
+        return Err(ApiError::conflict("The call has too many action items."));
+    }
     let room = room_of(instance, &me.id, &call.room).await?;
     if !room.members.contains(&input.assignee) {
         return Err(ApiError::bad_request(

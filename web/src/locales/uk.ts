@@ -4,6 +4,7 @@ const messages: Record<CallsKey, CallsMessage> = {
   calls: "Дзвінки",
   call: "{room} · дзвінок",
   backToChannel: "Назад до каналу",
+  notInSealed: "Дзвінки ще не наскрізно зашифровані, тож у цій кімнаті їх немає.",
   joinCall: "Приєднатися до дзвінка",
   startCall: "Почати дзвінок",
   inCall: {"one": "{count} учасник у дзвінку", "few": "{count} учасники в дзвінку", "many": "{count} учасників у дзвінку", "other": "{count} учасника в дзвінку"},

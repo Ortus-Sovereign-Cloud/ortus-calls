@@ -64,6 +64,12 @@ pub const MIGRATIONS: &[Migration] = &[
     );
     CREATE INDEX calls_actions_call ON calls_actions (call, at)",
     },
+    Migration {
+        version: 3,
+        name: "one live call a room",
+        sql: "UPDATE calls_calls SET ended_at = started_at WHERE ended_at IS NULL AND EXISTS (SELECT 1 FROM calls_calls c WHERE c.room = calls_calls.room AND c.ended_at IS NULL AND (c.started_at > calls_calls.started_at OR (c.started_at = calls_calls.started_at AND c.id > calls_calls.id)));
+    CREATE UNIQUE INDEX calls_calls_live ON calls_calls (room) WHERE ended_at IS NULL",
+    },
 ];
 
 /// A session not heard from for this long has left.
@@ -236,13 +242,11 @@ pub async fn add_session(tx: &mut dyn AsyncTx, call: &str, user: &str) -> StoreR
 
 /// A call with nobody left in it ends.
 pub async fn end_if_empty(s: &dyn AsyncStore, call: &str) -> StoreResult<bool> {
-    if !sessions(s, call).await?.is_empty() {
-        return Ok(false);
-    }
+    // One statement: someone joining meanwhile keeps the call going.
     let n = s
         .execute(
-            "UPDATE calls_calls SET ended_at = $1 WHERE id = $2 AND ended_at IS NULL",
-            &[now().into(), call.into()],
+            "UPDATE calls_calls SET ended_at = $1 WHERE id = $2 AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM calls_sessions WHERE call = $2 AND left_at IS NULL AND seen_at > $3)",
+            &[now().into(), call.into(), (now() - STALE_MS).into()],
         )
         .await?;
     Ok(n == 1)

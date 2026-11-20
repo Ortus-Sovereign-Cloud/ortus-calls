@@ -4,6 +4,7 @@ const messages: Record<CallsKey, CallsMessage> = {
   calls: "Anrufe",
   call: "{room} · Anruf",
   backToChannel: "Zurück zum Kanal",
+  notInSealed: "Anrufe sind noch nicht Ende-zu-Ende verschlüsselt, daher gibt es in diesem Raum keine.",
   joinCall: "Dem Anruf beitreten",
   startCall: "Anruf starten",
   inCall: {"one": "{count} Person im Anruf", "other": "{count} Personen im Anruf"},

@@ -5,6 +5,7 @@ const en = {
   calls: "Calls",
   call: "{room} · call",
   backToChannel: "Back to channel",
+  notInSealed: "Calls are not end to end yet, so this end-to-end room has none.",
   joinCall: "Join the call",
   startCall: "Start a call",
   inCall: {"one": "{count} person in the call", "other": "{count} people in the call"},

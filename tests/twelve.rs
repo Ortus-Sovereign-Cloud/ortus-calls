@@ -167,10 +167,15 @@ impl Peer {
         }
         let whole = got.concat();
         self.parts = None;
-        if let Ok(offer) = serde_json::from_str::<SdpOffer>(&whole) {
+        let mut value: serde_json::Value = serde_json::from_str(&whole).unwrap_or_default();
+        let n = value.as_object_mut().and_then(|o| o.remove("n"));
+        if let Ok(offer) = serde_json::from_value::<SdpOffer>(value) {
             if let Ok(answer) = self.rtc.sdp_api().accept_offer(offer) {
                 if let Some(channel) = self.channel {
-                    let text = serde_json::to_string(&answer).unwrap();
+                    // The offer's number goes back with the answer.
+                    let mut answer = serde_json::to_value(&answer).unwrap();
+                    answer["n"] = n.unwrap_or_default();
+                    let text = answer.to_string();
                     write_parts(&mut self.rtc, channel, &text);
                 }
             }
