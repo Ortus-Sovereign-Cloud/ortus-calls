@@ -21,4 +21,6 @@ ci/licence-gate-selftest.sh
 # The screens in a real browser, against the core with this app.
 cargo build --examples
 (cd web && npx playwright test)
+# Again with ICE over TCP only (UDP blocked).
+(cd web && ORTUS_E2E_TCP_ONLY=1 npx playwright test e2e/call.spec.ts)
 echo "all checks passed"

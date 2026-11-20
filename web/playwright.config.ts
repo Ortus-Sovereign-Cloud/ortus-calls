@@ -32,6 +32,9 @@ export default defineConfig({
         ORTUS_WEB_PORT: String(port),
         ORTUS_DATA_DIR: "test-results/data",
         ORTUS_MEDIA_LISTEN: "127.0.0.1:0",
+        // ORTUS_E2E_TCP_ONLY: the media node offers only ICE over TCP (the
+        // path through networks that block UDP).
+        ...(process.env.ORTUS_E2E_TCP_ONLY ? { ORTUS_MEDIA_ONLY_TCP: "1" } : {}),
         ORTUS_SETUP_TOKEN: "e2e-setup-token",
         ORTUS_PUBLIC_URL: `http://localhost:${port}`,
       },

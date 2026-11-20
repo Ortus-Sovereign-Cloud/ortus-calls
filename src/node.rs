@@ -4,6 +4,8 @@
 //! (DTLS-SRTP) and never decoded here.
 //!
 //! Settings: `ORTUS_MEDIA_LISTEN` (UDP, default 0.0.0.0:40000),
+//! The same port on TCP takes ICE over TCP (RFC 4571 framing) for
+//! networks that block UDP: the relay path, with no separate TURN server.
 //! `ORTUS_MEDIA_PUBLIC` (the address browsers reach, ip:port; default the
 //! listening address, or this machine's address when listening on all),
 //! `ORTUS_MEDIA_SIGNAL_LISTEN` (where web nodes hand over offers, default
@@ -11,9 +13,12 @@
 //! http:// the signal address). Web nodes find nodes in `calls_nodes`; a
 //! random token, kept sealed there, signs their requests.
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::net::{SocketAddr, UdpSocket};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::Mutex;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -22,7 +27,7 @@ use serde_json::{json, Value};
 use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use str0m::channel::{ChannelData, ChannelId};
 use str0m::media::{Direction, KeyframeRequest, KeyframeRequestKind, MediaData, MediaKind, Mid};
-use str0m::net::{Protocol, Receive};
+use str0m::net::{Protocol, Receive, TcpType};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -51,6 +56,16 @@ pub fn run(
         let socket = UdpSocket::bind(&listen).map_err(|e| format!("media on {listen}: {e}"))?;
         let local = socket.local_addr().map_err(|e| e.to_string())?;
         let public = public_address(local)?;
+        // ICE over TCP on the same port (when it is free).
+        let tcp = TcpListener::bind(local)
+            .map_err(|e| eprintln!("ortus: calls: no ICE over TCP on {local}: {e}"))
+            .ok();
+        let only_tcp = std::env::var("ORTUS_MEDIA_ONLY_TCP").is_ok_and(|v| v == "1");
+        let candidates = Candidates {
+            public,
+            udp: !only_tcp,
+            tcp: tcp.is_some(),
+        };
         let signal = tokio::net::TcpListener::bind(
             std::env::var("ORTUS_MEDIA_SIGNAL_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into()),
         )
@@ -72,7 +87,7 @@ pub fn run(
         let loop_running = Arc::clone(&running);
         std::thread::Builder::new()
             .name("ortus-media".into())
-            .spawn(move || media_loop(socket, public, rx, loop_running))
+            .spawn(move || media_loop(socket, tcp, public, rx, loop_running))
             .map_err(|e| e.to_string())?;
         println!("ortus: calls: media on {local} (public {public}), signalling {signal_url}");
         let s = instance.store.as_ref();
@@ -99,7 +114,7 @@ pub fn run(
                     if let Ok((conn, _)) = accepted {
                         let tx = tx.clone();
                         let token = token.clone();
-                        tokio::spawn(async move { let _ = signalling(conn, &token, public, tx).await; });
+                        tokio::spawn(async move { let _ = signalling(conn, &token, candidates, tx).await; });
                     }
                 }
             }
@@ -136,10 +151,18 @@ const MAX_REQUEST: usize = 64 * 1024;
 
 /// One signalling request: `POST /offer {call, session, offer}` gives the
 /// answer; `POST /kick {session}` drops a session.
+/// Where browsers reach this node: its address, over UDP and TCP.
+#[derive(Clone, Copy)]
+struct Candidates {
+    public: SocketAddr,
+    udp: bool,
+    tcp: bool,
+}
+
 async fn signalling(
     mut conn: tokio::net::TcpStream,
     token: &str,
-    public: SocketAddr,
+    candidates: Candidates,
     tx: SyncSender<Command>,
 ) -> Result<(), String> {
     let mut buf = Vec::new();
@@ -199,7 +222,7 @@ async fn signalling(
     let (status, out) = if !authorised {
         (401, json!({"error": "not signed"}))
     } else if request_line.starts_with("POST /offer ") {
-        match offer(&body, public, &tx) {
+        match offer(&body, candidates, &tx) {
             Ok(answer) => (200, json!({"answer": answer})),
             Err(e) => (400, json!({"error": e})),
         }
@@ -218,14 +241,30 @@ async fn signalling(
     Ok(())
 }
 
-fn offer(body: &Value, public: SocketAddr, tx: &SyncSender<Command>) -> Result<SdpAnswer, String> {
+fn offer(
+    body: &Value,
+    candidates: Candidates,
+    tx: &SyncSender<Command>,
+) -> Result<SdpAnswer, String> {
     let call = body["call"].as_str().ok_or("no call")?.to_string();
     let session = body["session"].as_str().ok_or("no session")?.to_string();
     let offer: SdpOffer = serde_json::from_value(body["offer"].clone())
         .map_err(|e| format!("an unreadable offer: {e}"))?;
     let mut rtc = Rtc::builder().build(Instant::now());
-    let candidate = Candidate::host(public, "udp").map_err(|e| e.to_string())?;
-    rtc.add_local_candidate(candidate);
+    if candidates.udp {
+        rtc.add_local_candidate(
+            Candidate::host(candidates.public, "udp").map_err(|e| e.to_string())?,
+        );
+    }
+    if candidates.tcp {
+        let tcp = Candidate::builder()
+            .tcp()
+            .host(candidates.public)
+            .tcptype(TcpType::Passive)
+            .build()
+            .map_err(|e| e.to_string())?;
+        rtc.add_local_candidate(tcp);
+    }
     let answer = rtc
         .sdp_api()
         .accept_offer(offer)
@@ -299,17 +338,161 @@ enum Propagated {
     KeyframeRequest(u64, KeyframeRequest, u64, Mid),
 }
 
-fn media_loop(
+/// A packet from the network: UDP, or one RFC 4571 frame of a TCP connection.
+struct Packet {
+    proto: Protocol,
+    source: SocketAddr,
+    destination: SocketAddr,
+    data: Vec<u8>,
+}
+
+/// Where the loop sends: the UDP socket, and the open TCP connections by
+/// their remote address.
+struct Wire {
+    udp: UdpSocket,
+    tcp: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
+}
+
+impl Wire {
+    fn send(&self, proto: Protocol, destination: SocketAddr, data: &[u8]) {
+        match proto {
+            Protocol::Udp => {
+                let _ = self.udp.send_to(data, destination);
+            }
+            Protocol::Tcp => {
+                let mut conns = self.tcp.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(conn) = conns.get_mut(&destination) else {
+                    return;
+                };
+                let Ok(len) = u16::try_from(data.len()) else {
+                    return;
+                };
+                let mut framed = Vec::with_capacity(data.len() + 2);
+                framed.extend_from_slice(&len.to_be_bytes());
+                framed.extend_from_slice(data);
+                if conn.write_all(&framed).is_err() {
+                    conns.remove(&destination);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+const MAX_TCP: usize = 500;
+
+/// Reads UDP packets into the loop's channel.
+fn udp_reader(
     socket: UdpSocket,
+    out: SyncSender<Packet>,
+    running: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let local = socket.local_addr().ok();
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
+    let mut buf = vec![0u8; 2000];
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        if let Ok((n, source)) = socket.recv_from(&mut buf) {
+            let Some(destination) = local else { continue };
+            let _ = out.try_send(Packet {
+                proto: Protocol::Udp,
+                source,
+                destination,
+                data: buf[..n].to_vec(),
+            });
+        }
+    }
+}
+
+/// Takes TCP connections (ICE over TCP) and reads their frames into the
+/// loop's channel.
+fn tcp_acceptor(
+    listener: TcpListener,
+    out: SyncSender<Packet>,
+    conns: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
+    running: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let local = listener.local_addr().ok();
+    let _ = listener.set_nonblocking(true);
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((conn, peer)) => {
+                let Some(destination) = local else { continue };
+                if conns.lock().unwrap_or_else(|e| e.into_inner()).len() >= MAX_TCP {
+                    continue;
+                }
+                let _ = conn.set_nonblocking(false);
+                let _ = conn.set_nodelay(true);
+                let _ = conn.set_write_timeout(Some(Duration::from_secs(1)));
+                let Ok(writer) = conn.try_clone() else {
+                    continue;
+                };
+                conns
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(peer, writer);
+                let out = out.clone();
+                let conns = Arc::clone(&conns);
+                let running = Arc::clone(&running);
+                let _ = std::thread::Builder::new()
+                    .name("ortus-media-tcp".into())
+                    .spawn(move || {
+                        let mut conn = conn;
+                        let _ = conn.set_read_timeout(Some(Duration::from_secs(60)));
+                        let mut len = [0u8; 2];
+                        while running.load(std::sync::atomic::Ordering::SeqCst) {
+                            if conn.read_exact(&mut len).is_err() {
+                                break;
+                            }
+                            let mut data = vec![0u8; u16::from_be_bytes(len) as usize];
+                            if conn.read_exact(&mut data).is_err() {
+                                break;
+                            }
+                            let _ = out.try_send(Packet {
+                                proto: Protocol::Tcp,
+                                source: peer,
+                                destination,
+                                data,
+                            });
+                        }
+                        conns
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&peer);
+                    });
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+fn media_loop(
+    udp: UdpSocket,
+    tcp: Option<TcpListener>,
     public: SocketAddr,
     rx: Receiver<Command>,
     running: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let mut clients: Vec<Client> = Vec::new();
     let mut queue: VecDeque<(String, Propagated)> = VecDeque::new();
-    let mut buf = vec![0u8; 2000];
     let mut next_id = 0u64;
-    let local = socket.local_addr().unwrap_or(public);
+    let _ = public;
+    let (net_tx, net_rx) = std::sync::mpsc::sync_channel::<Packet>(8192);
+    let conns: Arc<Mutex<HashMap<SocketAddr, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
+    let Ok(reader) = udp.try_clone() else { return };
+    {
+        let (out, running) = (net_tx.clone(), Arc::clone(&running));
+        let _ = std::thread::Builder::new()
+            .name("ortus-media-udp".into())
+            .spawn(move || udp_reader(reader, out, running));
+    }
+    if let Some(listener) = tcp {
+        let (out, conns, running) = (net_tx.clone(), Arc::clone(&conns), Arc::clone(&running));
+        let _ = std::thread::Builder::new()
+            .name("ortus-media-tcp-accept".into())
+            .spawn(move || tcp_acceptor(listener, out, conns, running));
+    }
+    drop(net_tx);
+    let wire = Wire { udp, tcp: conns };
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         clients.retain(|c| c.rtc.is_alive());
         loop {
@@ -354,7 +537,7 @@ fn media_loop(
                 if !client.rtc.is_alive() {
                     break;
                 }
-                match client.poll_output(&socket) {
+                match client.poll_output(&wire) {
                     Propagated::Timeout(t) => {
                         timeout = timeout.min(t);
                         break;
@@ -371,16 +554,14 @@ fn media_loop(
         let wait = timeout
             .saturating_duration_since(Instant::now())
             .max(Duration::from_millis(1));
-        let _ = socket.set_read_timeout(Some(wait));
-        buf.resize(2000, 0);
-        if let Ok((n, source)) = socket.recv_from(&mut buf) {
-            if let Ok(contents) = buf[..n].try_into() {
+        if let Ok(packet) = net_rx.recv_timeout(wait) {
+            if let Ok(contents) = packet.data.as_slice().try_into() {
                 let input = Input::Receive(
                     Instant::now(),
                     Receive {
-                        proto: Protocol::Udp,
-                        source,
-                        destination: local,
+                        proto: packet.proto,
+                        source: packet.source,
+                        destination: packet.destination,
                         contents,
                     },
                 );
@@ -432,13 +613,13 @@ impl Client {
         }
     }
 
-    fn poll_output(&mut self, socket: &UdpSocket) -> Propagated {
+    fn poll_output(&mut self, wire: &Wire) -> Propagated {
         if self.negotiate() {
             return Propagated::Noop;
         }
         match self.rtc.poll_output() {
             Ok(Output::Transmit(t)) => {
-                let _ = socket.send_to(&t.contents, t.destination);
+                wire.send(t.proto, t.destination, &t.contents);
                 Propagated::Noop
             }
             Ok(Output::Timeout(t)) => Propagated::Timeout(t),
