@@ -434,7 +434,7 @@ const MAX_TCP: usize = 500;
 /// a connection that starts no call goes after `PROVE`).
 const MAX_TCP_PER_IP: usize = 64;
 /// How long a TCP connection has to start a call's connection.
-const PROVE: Duration = Duration::from_secs(10);
+const PROVE: Duration = Duration::from_secs(30);
 /// Frames queued for one TCP connection.
 const TCP_QUEUE: usize = 512;
 

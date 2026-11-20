@@ -137,6 +137,22 @@ async fn join(
     if !started && present >= store::MAX_PEOPLE as i64 {
         return Err(ApiError::conflict("The call is full."));
     }
+    // One person takes at most three places (a laptop, a phone, a tablet),
+    // so nobody fills a call alone.
+    let mine = tx
+        .query(
+            "SELECT COUNT(*) FROM calls_sessions WHERE call = $1 AND user_id = $2 AND left_at IS NULL AND seen_at > $3",
+            &[call.id.as_str().into(), me.id.as_str().into(), (store::now() - store::STALE_MS).into()],
+        )
+        .await?
+        .first()
+        .and_then(|r| r.int(0))
+        .unwrap_or(0);
+    if mine >= 3 {
+        return Err(ApiError::conflict(
+            "You are in this call on three devices already.",
+        ));
+    }
     let session = store::add_session(tx.as_mut(), &call.id, &me.id).await?;
     tx.commit().await?;
     if started {
