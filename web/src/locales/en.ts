@@ -1,0 +1,36 @@
+import type { Message } from "ortus-kit";
+
+// The calls app's texts in English: the keys every other catalog has.
+const en = {
+  calls: "Calls",
+  call: "{room} · call",
+  backToChannel: "Back to channel",
+  joinCall: "Join the call",
+  startCall: "Start a call",
+  inCall: {"one": "{count} person in the call", "other": "{count} people in the call"},
+  mute: "Mute",
+  unmute: "Unmute",
+  camera: "Camera",
+  cameraOn: "Turn camera on",
+  shareScreen: "Share screen",
+  stopSharing: "Stop sharing",
+  raiseHand: "Raise hand",
+  lowerHand: "Lower hand",
+  leave: "Leave",
+  you: "You",
+  muted: "Muted",
+  handRaised: "Hand raised",
+  presenting: "{who} is presenting",
+  nothingShown: "Nothing is shown yet",
+  nothingShownHint: "Share your screen to show something to everyone.",
+  participants: "Participants",
+  noDevices: "No camera or microphone is allowed: you are in the call to listen and watch.",
+  joining: "Joining…",
+  callEnded: "The call has ended.",
+  notFound: "There is no such room.",
+  reconnecting: "Connection lost, joining again…",
+};
+
+export type CallsKey = keyof typeof en;
+export type CallsMessage = Message;
+export default en;

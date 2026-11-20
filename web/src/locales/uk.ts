@@ -1,0 +1,33 @@
+import type { CallsKey, CallsMessage } from "./en.js";
+
+const messages: Record<CallsKey, CallsMessage> = {
+  calls: "Дзвінки",
+  call: "{room} · дзвінок",
+  backToChannel: "Назад до каналу",
+  joinCall: "Приєднатися до дзвінка",
+  startCall: "Почати дзвінок",
+  inCall: {"one": "{count} учасник у дзвінку", "few": "{count} учасники в дзвінку", "many": "{count} учасників у дзвінку", "other": "{count} учасника в дзвінку"},
+  mute: "Вимкнути мікрофон",
+  unmute: "Увімкнути мікрофон",
+  camera: "Камера",
+  cameraOn: "Увімкнути камеру",
+  shareScreen: "Показати екран",
+  stopSharing: "Припинити показ",
+  raiseHand: "Підняти руку",
+  lowerHand: "Опустити руку",
+  leave: "Вийти",
+  you: "Ви",
+  muted: "Мікрофон вимкнено",
+  handRaised: "Рука піднята",
+  presenting: "{who} показує",
+  nothingShown: "Поки нічого не показано",
+  nothingShownHint: "Покажіть свій екран, щоб усі побачили.",
+  participants: "Учасники",
+  noDevices: "Камера й мікрофон недоступні: ви в дзвінку, щоб слухати й дивитися.",
+  joining: "Приєднання…",
+  callEnded: "Дзвінок завершено.",
+  notFound: "Такої кімнати немає.",
+  reconnecting: "З’єднання втрачено, повторне приєднання…",
+};
+
+export default messages;

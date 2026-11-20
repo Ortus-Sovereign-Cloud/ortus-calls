@@ -18,6 +18,11 @@ use ortus_core::storage::Migration;
 /// Ends what is over: sessions not heard from, empty calls, gone nodes.
 pub const SWEEP_JOB: &str = "calls.sweep";
 
+/// The built web client (web/dist), served under /assets/apps/calls/.
+#[derive(rust_embed::RustEmbed)]
+#[folder = "web/dist"]
+struct Web;
+
 /// The calls app.
 pub struct Calls;
 
@@ -29,6 +34,10 @@ impl App for Calls {
             path: "/calls",
             order: 3,
         }
+    }
+
+    fn web_file(&self, path: &str) -> Option<std::borrow::Cow<'static, [u8]>> {
+        Web::get(path).map(|file| file.data)
     }
 
     fn migrations(&self) -> &'static [Migration] {

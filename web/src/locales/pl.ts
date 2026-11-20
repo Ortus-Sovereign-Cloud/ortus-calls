@@ -1,0 +1,33 @@
+import type { CallsKey, CallsMessage } from "./en.js";
+
+const messages: Record<CallsKey, CallsMessage> = {
+  calls: "Rozmowy",
+  call: "{room} · rozmowa",
+  backToChannel: "Wróć do kanału",
+  joinCall: "Dołącz do rozmowy",
+  startCall: "Rozpocznij rozmowę",
+  inCall: {"one": "{count} osoba w rozmowie", "few": "{count} osoby w rozmowie", "many": "{count} osób w rozmowie", "other": "{count} osoby w rozmowie"},
+  mute: "Wycisz",
+  unmute: "Wyłącz wyciszenie",
+  camera: "Kamera",
+  cameraOn: "Włącz kamerę",
+  shareScreen: "Udostępnij ekran",
+  stopSharing: "Zakończ udostępnianie",
+  raiseHand: "Podnieś rękę",
+  lowerHand: "Opuść rękę",
+  leave: "Wyjdź",
+  you: "Ty",
+  muted: "Wyciszony",
+  handRaised: "Ręka podniesiona",
+  presenting: "{who} prezentuje",
+  nothingShown: "Nic jeszcze nie jest pokazywane",
+  nothingShownHint: "Udostępnij ekran, aby pokazać coś wszystkim.",
+  participants: "Uczestnicy",
+  noDevices: "Kamera i mikrofon są niedostępne: jesteś w rozmowie, żeby słuchać i oglądać.",
+  joining: "Dołączanie…",
+  callEnded: "Rozmowa się zakończyła.",
+  notFound: "Nie ma takiego pokoju.",
+  reconnecting: "Utracono połączenie, ponowne dołączanie…",
+};
+
+export default messages;

@@ -72,7 +72,9 @@ async fn get_room(
         Some(c) => call_json(instance, &c).await?,
         None => Value::Null,
     };
-    Ok(ok(&json!({"call": call, "encrypted": room.encrypted})))
+    Ok(ok(
+        &json!({"call": call, "encrypted": room.encrypted, "name": room.name, "kind": room.kind}),
+    ))
 }
 
 /// Joins the room's call, starting it when there is none.

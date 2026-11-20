@@ -2307,6 +2307,7 @@ name = "ortus-calls"
 version = "0.1.0"
 dependencies = [
  "ortus-core",
+ "rust-embed",
  "rust-web-server",
  "serde",
  "serde_json",
