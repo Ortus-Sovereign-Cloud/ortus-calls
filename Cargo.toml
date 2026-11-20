@@ -11,10 +11,17 @@ publish = false
 # Built from the commit in pins.toml (checked out by ci/fetch.sh), never
 # from the branch: see the patch below.
 ortus-core = { git = "https://github.com/Ortus-Sovereign-Cloud/ortus-core" }
+rust-web-server = "18.34"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# WebRTC for the media node: sans-IO, aws-lc-rs for DTLS (as the rest).
+str0m = { version = "0.25", default-features = false, features = ["aws-lc-rs"] }
+tokio = { version = "1.54.1", features = ["net", "io-util", "time", "sync", "macros", "rt"] }
 
 [dev-dependencies]
 rust-web-server = "18.34"
 serde_json = "1"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
 
 [patch."https://github.com/Ortus-Sovereign-Cloud/ortus-core"]
 ortus-core = { path = ".deps/ortus-core" }
