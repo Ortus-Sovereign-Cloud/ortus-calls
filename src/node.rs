@@ -326,7 +326,7 @@ struct Client {
     pending: Option<SdpPendingOffer>,
     /// The offer waiting for its answer, and when it was last sent (sent
     /// again if no answer comes).
-    sent: Option<(String, Instant)>,
+    sent: Option<(String, Instant, Duration)>,
     /// Parts of a message from the browser, by message id.
     parts: Option<(String, usize, Vec<String>)>,
     channel: Option<ChannelId>,
@@ -435,6 +435,11 @@ const MAX_TCP: usize = 500;
 const MAX_TCP_PER_IP: usize = 64;
 /// How long a TCP connection has to start a call's connection.
 const PROVE: Duration = Duration::from_secs(30);
+
+/// How long an offer to the browser waits for its answer before it is sent
+/// again, the first time and at most.
+const FIRST_RESEND: Duration = Duration::from_secs(2);
+const LAST_RESEND: Duration = Duration::from_secs(8);
 /// Frames queued for one TCP connection.
 const TCP_QUEUE: usize = 512;
 
@@ -889,24 +894,28 @@ impl Client {
         tagged["n"] = self.offers.into();
         let text = tagged.to_string();
         write_parts(&mut channel, &text);
-        self.sent = Some((text, Instant::now()));
+        self.sent = Some((text, Instant::now(), FIRST_RESEND));
         self.pending = Some(pending);
         true
     }
 
     /// An offer with no answer for a while is sent again.
+    /// Sends the offer again while it has no answer: soon (a message lost
+    /// as the channel opens costs seconds, not a call's first view of
+    /// someone), then less often. The browser answers a repeated offer
+    /// with the same number, and an answer already taken is ignored.
     fn resend(&mut self) {
-        let Some((text, at)) = self.sent.as_ref() else {
+        let Some((text, at, wait)) = self.sent.as_ref() else {
             return;
         };
-        if at.elapsed() < Duration::from_secs(8) {
+        if at.elapsed() < *wait {
             return;
         }
-        let text = text.clone();
+        let (text, wait) = (text.clone(), (*wait * 2).min(LAST_RESEND));
         if let Some(mut channel) = self.channel.and_then(|id| self.rtc.channel(id)) {
             write_parts(&mut channel, &text);
         }
-        self.sent = Some((text, Instant::now()));
+        self.sent = Some((text, Instant::now(), wait));
     }
 
     /// A part of a message from the browser; the whole message when the
