@@ -1,0 +1,44 @@
+name: stress
+
+# The two-person call test many times on GitHub's machines (where it once
+# failed), keeping the trace of any failure. Run by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      times:
+        description: How many times
+        default: "100"
+      tcp:
+        description: Over ICE TCP only (the relay path)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: The program and the browser
+        run: |
+          ci/fetch.sh
+          (cd web && npm ci && npm run build && npx playwright install --with-deps chromium)
+          cargo build --examples
+      - name: The call, again and again
+        env:
+          ORTUS_E2E_TCP_ONLY: ${{ inputs.tcp && '1' || '' }}
+        run: cd web && npx playwright test e2e/call.spec.ts --repeat-each=${{ inputs.times }} --workers=2 --trace=retain-on-failure
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: call-traces
+          path: web/test-results
+          retention-days: 7
