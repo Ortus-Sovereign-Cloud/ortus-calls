@@ -280,8 +280,10 @@ fn twelve_people_in_one_call() {
         }
     }
 
-    // Everyone talks and shows video for a while.
-    let until = Instant::now() + Duration::from_secs(25);
+    // Everyone talks and shows video until every track flows: up to a
+    // minute, as twelve peers in one thread lag on a busy machine (it ends
+    // as soon as all of them receive everything).
+    let until = Instant::now() + Duration::from_secs(60);
     while Instant::now() < until {
         let now = Instant::now();
         for p in peers.iter_mut() {

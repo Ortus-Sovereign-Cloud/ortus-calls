@@ -62,16 +62,6 @@ function tone(text: string): string {
   return TONES[h % TONES.length]!;
 }
 
-function initials(name: string): string {
-  return (
-    name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((p) => p[0]!.toUpperCase())
-      .join("") || "?"
-  );
-}
 
 @customElement("ortus-call")
 export class WebCall extends LitElement {
@@ -783,7 +773,7 @@ export class WebCall extends LitElement {
     const speaking = this.speaking.has(mine ? "me" : s.session) && !s.muted;
     const full = mine ? name : this.info?.people[s.user]?.name ?? "";
     return html`<div class="tile ${speaking ? "speaking" : ""}" role="group" aria-label=${full}>
-      ${video ? html`<video autoplay playsinline muted .srcObject=${video}></video>` : html`<span class="avatar" aria-hidden="true" .style=${`background: ${tone(full)}`}>${initials(full)}</span>`}
+      ${video ? html`<video autoplay playsinline muted .srcObject=${video}></video>` : html`<ortus-avatar class="avatar" aria-hidden="true" .style=${`background: ${tone(full)}`} .name=${full} .user=${s.user}></ortus-avatar>`}
       <span class="name">${name}</span>
       ${s.muted ? html`<span class="state">${t(this.localize, "muted")}</span>` : nothing}
       ${s.hand
