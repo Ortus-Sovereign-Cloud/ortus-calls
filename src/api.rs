@@ -87,6 +87,45 @@ async fn get_room(
     ))
 }
 
+/// The calls going on in rooms the person is in: each room's name and
+/// kind, when it started, and who is in it (for the Calls page and the
+/// start page's card).
+async fn live(
+    request: &Request,
+    _: &PathParams,
+    instance: &Arc<Instance>,
+) -> Result<Response, ApiError> {
+    let me = signed(request, instance).await?;
+    let s = instance.store.as_ref();
+    let chat = chat(instance).await?;
+    let mut live = Vec::new();
+    for call in store::live_calls(s).await? {
+        let Ok(Some(room)) = chat.room(&me.id, &call.room).await else {
+            continue;
+        };
+        let sessions = store::sessions(s, &call.id).await?;
+        if sessions.is_empty() {
+            continue;
+        }
+        let mut people = Vec::new();
+        for user in sessions.iter().map(|x| x.user.as_str()) {
+            if people.iter().any(|(id, _): &(String, String)| id == user) {
+                continue;
+            }
+            let name = ortus_core::auth::accounts::by_id(s, user)
+                .await?
+                .map(|u| u.name)
+                .unwrap_or_default();
+            people.push((user.to_string(), name));
+        }
+        live.push(json!({
+            "room": room.id, "name": room.name, "kind": room.kind, "startedAt": call.started_at,
+            "people": people.iter().map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(ok(&json!({ "live": live })))
+}
+
 /// Joins the room's call, starting it when there is none.
 async fn join(
     request: &Request,
@@ -531,6 +570,7 @@ macro_rules! with_params {
 }
 
 with_params!(h_room, get_room);
+with_params!(h_live, live);
 with_params!(h_join, join);
 with_params!(h_offer, offer);
 with_params!(h_state, state);
@@ -554,6 +594,13 @@ pub fn routes() -> Vec<Route> {
         handler,
     };
     vec![
+        route(
+            Method::Get,
+            "/calls/live",
+            "callsLive",
+            "The calls going on in rooms one is in: room, name, kind, startedAt and who is in each.",
+            h_live,
+        ),
         route(
             Method::Get,
             "/calls/rooms/:room",

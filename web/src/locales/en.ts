@@ -3,6 +3,12 @@ import type { Message } from "ortus-kit";
 // The calls app's texts in English: the keys every other catalog has.
 const en = {
   calls: "Calls",
+  happeningNow: "Happening now",
+  noCallsNow: "No calls right now.",
+  startHere: "Start call",
+  noRooms: "No channels or conversations yet.",
+  startedAgo: "started {when}",
+  join: "Join",
   call: "{room} · call",
   backToChannel: "Back to channel",
   notInSealed: "Calls are not end to end yet, so this end-to-end room has none.",

@@ -2,6 +2,12 @@ import type { CallsKey, CallsMessage } from "./en.js";
 
 const messages: Record<CallsKey, CallsMessage> = {
   calls: "Дзвінки",
+  happeningNow: "Зараз тривають",
+  noCallsNow: "Зараз дзвінків немає.",
+  startHere: "Почати дзвінок",
+  noRooms: "Ще немає каналів і розмов.",
+  startedAgo: "почався {when}",
+  join: "Приєднатися",
   call: "{room} · дзвінок",
   backToChannel: "Назад до каналу",
   notInSealed: "Дзвінки ще не наскрізно зашифровані, тож у цій кімнаті їх немає.",

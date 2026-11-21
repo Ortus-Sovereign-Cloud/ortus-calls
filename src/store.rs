@@ -139,6 +139,18 @@ pub async fn live_call(s: &dyn AsyncStore, room: &str) -> StoreResult<Option<Cal
     .map(call_of))
 }
 
+/// Every call going on, the newest first.
+pub async fn live_calls(s: &dyn AsyncStore) -> StoreResult<Vec<Call>> {
+    Ok(s.query(
+        &format!("{CALL} WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 200"),
+        &[],
+    )
+    .await?
+    .iter()
+    .map(call_of)
+    .collect())
+}
+
 pub async fn call(s: &dyn AsyncStore, id: &str) -> StoreResult<Option<Call>> {
     Ok(s.query(&format!("{CALL} WHERE id = $1"), &[id.into()])
         .await?

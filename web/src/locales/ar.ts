@@ -2,6 +2,12 @@ import type { CallsKey, CallsMessage } from "./en.js";
 
 const messages: Record<CallsKey, CallsMessage> = {
   calls: "المكالمات",
+  happeningNow: "جارٍ الآن",
+  noCallsNow: "لا مكالمات الآن.",
+  startHere: "بدء مكالمة",
+  noRooms: "لا قنوات أو محادثات بعد.",
+  startedAgo: "بدأت {when}",
+  join: "انضمام",
   call: "{room} · مكالمة",
   backToChannel: "العودة إلى القناة",
   notInSealed: "المكالمات ليست مشفرة من طرف إلى طرف بعد، لذا لا توجد مكالمات في هذه الغرفة.",
