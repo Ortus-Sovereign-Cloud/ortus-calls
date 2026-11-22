@@ -59,6 +59,15 @@ test("two people meet in a room's call", async ({ page, browser }) => {
   await expect(his.getByText(en.presenting.replace("{who}", "Olena Hrytsenko"))).toBeVisible({ timeout: 15_000 });
   await expect.poll(() => playing(marek, "video.screen"), { timeout: 15_000 }).toBe(true);
 
+  // Marek reloads the page: his old place ends at once (not after the
+  // heartbeat runs out), and after joining again he shows once.
+  await marek.reload();
+  await expect(olena.getByText(en.inCall.one.replace("{count}", "1"))).toBeVisible({ timeout: 8_000 });
+  await his.getByRole("button", { name: en.joinCall }).click();
+  await expect(his.getByText(en.inCall.other.replace("{count}", "2"))).toBeVisible();
+  await expect(olena.getByRole("group", { name: "Marek Nowak" })).toHaveCount(1);
+  await expect(olena.getByText(en.inCall.other.replace("{count}", "2"))).toBeVisible({ timeout: 8_000 });
+
   // Marek leaves: back in the channel; Olena is alone.
   await his.getByRole("button", { name: en.leave }).click();
   await expect(marek).toHaveURL(/\/chat\?room=/);

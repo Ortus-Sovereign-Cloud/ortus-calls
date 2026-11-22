@@ -438,10 +438,33 @@ export class WebCall extends LitElement {
     call<{ apps: { id: string }[] }>("GET", "/apps")
       .then((r) => (this.docsInstalled = r.apps.some((a) => a.id === "docs")))
       .catch(() => undefined);
+    window.addEventListener("pagehide", this.gone);
+    window.addEventListener("pageshow", this.back);
   }
+
+  /**
+   * The page is closed or reloaded: its place in the call ends now, not
+   * when its heartbeat runs out (else the person shows twice on return).
+   */
+  private readonly gone = (): void => {
+    if (!this.session) return;
+    void fetch(`/api/v1/calls/sessions/${encodeURIComponent(this.session)}/leave`, {
+      method: "POST",
+      headers: { "X-Requested-With": "ortus", Accept: "application/json" },
+      keepalive: true,
+    }).catch(() => undefined);
+    this.session = "";
+  };
+
+  /** Back from the browser's page cache: its place ended, so join again. */
+  private readonly back = (event: PageTransitionEvent): void => {
+    if (event.persisted) location.reload();
+  };
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    window.removeEventListener("pagehide", this.gone);
+    window.removeEventListener("pageshow", this.back);
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     this.hangUp();
