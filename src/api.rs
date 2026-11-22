@@ -209,8 +209,25 @@ async fn join(
         )
         .await;
     }
+    // The node's TURN relay, with credentials for this session (12 hours):
+    // for networks where only web ports get through.
+    let ice_servers = match store::node_turn(s, &call.node).await? {
+        Some((url, sealed)) => match instance.keys.open_text(&sealed) {
+            Ok(token) => {
+                let (username, credential) = crate::turn::credentials(
+                    &token,
+                    &session.id,
+                    (store::now() / 1000) as u64,
+                    12 * 3600,
+                );
+                json!([{"urls": [url], "username": username, "credential": credential}])
+            }
+            Err(_) => json!([]),
+        },
+        None => json!([]),
+    };
     Ok(ok(
-        &json!({"call": call_json(instance, &call).await?, "session": session.id}),
+        &json!({"call": call_json(instance, &call).await?, "session": session.id, "ice_servers": ice_servers}),
     ))
 }
 

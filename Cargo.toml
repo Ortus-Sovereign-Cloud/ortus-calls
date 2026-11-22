@@ -13,6 +13,10 @@ publish = false
 ortus-core = { git = "https://github.com/Ortus-Sovereign-Cloud/ortus-core" }
 rust-embed = "8.14.0"
 rust-web-server = "18.34"
+# The TURN relay: HMAC-SHA1 (STUN message integrity) and CRC-32 (its
+# fingerprint); both already in the tree through str0m.
+aws-lc-rs = "1.19"
+crc32fast = "1.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # WebRTC for the media node: sans-IO, aws-lc-rs for DTLS (as the rest).

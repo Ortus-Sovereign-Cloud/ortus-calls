@@ -504,10 +504,10 @@ export class WebCall extends LitElement {
           this.noDevices = true;
         }
       }
-      const r = await call<{ call: CallInfo; session: string }>("POST", `/calls/rooms/${encodeURIComponent(this.room)}/join`);
+      const r = await call<{ call: CallInfo; session: string; ice_servers?: RTCIceServer[] }>("POST", `/calls/rooms/${encodeURIComponent(this.room)}/join`);
       this.session = r.session;
       this.info = r.call;
-      await this.connect();
+      await this.connect(r.ice_servers ?? []);
       this.watch("me", this.local);
       await this.report();
       this.timers.push(window.setInterval(() => void this.report(), 10_000));
@@ -519,8 +519,14 @@ export class WebCall extends LitElement {
     }
   }
 
-  private async connect(): Promise<void> {
-    const pc = new RTCPeerConnection();
+  /**
+   * The connection to the media node: directly, or through its TURN relay
+   * (`iceServers`) where only web ports get through. `?ice=relay` in the
+   * address uses the relay only (to check it works).
+   */
+  private async connect(iceServers: RTCIceServer[]): Promise<void> {
+    const relayOnly = new URLSearchParams(location.search).get("ice") === "relay" && iceServers.length > 0;
+    const pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: relayOnly ? "relay" : "all" });
     this.pc = pc;
     const channel = pc.createDataChannel("signalling");
     this.channel = channel;
@@ -540,7 +546,7 @@ export class WebCall extends LitElement {
       window.setTimeout(() => {
         if (this.pc !== pc || !this.session) return;
         pc.close();
-        this.connect().catch(() => undefined);
+        this.connect(iceServers).catch(() => undefined);
       }, 1000);
     };
     const offer = await pc.createOffer();

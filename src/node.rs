@@ -90,15 +90,49 @@ pub fn run(
             .spawn(move || media_loop(socket, tcp, public, rx, loop_running))
             .map_err(|e| e.to_string())?;
         println!("ortus: calls: media on {local} (public {public}), signalling {signal_url}");
+        // A TURN relay for networks that allow only web ports: listening on
+        // ORTUS_TURN_LISTEN, reached by browsers at ORTUS_TURN_URL (e.g.
+        // turns:turn.example.org:443?transport=tcp, behind rws's tls_tunnels).
+        let turn_url = match (
+            std::env::var("ORTUS_TURN_LISTEN"),
+            std::env::var("ORTUS_TURN_URL"),
+        ) {
+            (Ok(listen), Ok(url)) if !listen.is_empty() && !url.is_empty() => {
+                let listen: SocketAddr = listen
+                    .parse()
+                    .map_err(|e| format!("ORTUS_TURN_LISTEN: {e}"))?;
+                let media_local = SocketAddr::new(
+                    if local.ip().is_unspecified() {
+                        std::net::IpAddr::from([127, 0, 0, 1])
+                    } else {
+                        local.ip()
+                    },
+                    local.port(),
+                );
+                let media = crate::turn::Media {
+                    public,
+                    local: media_local,
+                };
+                let (secret, stop) = (token.clone(), stop.clone());
+                tokio::spawn(async move {
+                    if let Err(e) = crate::turn::serve(listen, secret, media, stop).await {
+                        eprintln!("ortus: calls: {e}");
+                    }
+                });
+                Some(url)
+            }
+            _ => None,
+        };
         let s = instance.store.as_ref();
         let sealed = instance.keys.seal(token.as_bytes());
         s.execute(
-            "INSERT INTO calls_nodes (id, signal, token_sealed, seen_at) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO calls_nodes (id, signal, token_sealed, seen_at, turn) VALUES ($1, $2, $3, $4, $5)",
             &[
                 id.as_str().into(),
                 signal_url.as_str().into(),
                 sealed.into(),
                 store::now().into(),
+                turn_url.into(),
             ],
         )
         .await

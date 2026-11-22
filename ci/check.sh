@@ -23,4 +23,6 @@ cargo build --examples
 (cd web && npx playwright test)
 # Again with ICE over TCP only (UDP blocked).
 (cd web && ORTUS_E2E_TCP_ONLY=1 npx playwright test e2e/call.spec.ts)
+# Through the TURN relay only (the media node's public address unreachable).
+(cd web && ORTUS_E2E_RELAY=1 npx playwright test e2e/call.spec.ts)
 echo "all checks passed"

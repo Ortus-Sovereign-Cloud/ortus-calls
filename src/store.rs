@@ -70,7 +70,29 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: "UPDATE calls_calls SET ended_at = started_at WHERE ended_at IS NULL AND EXISTS (SELECT 1 FROM calls_calls c WHERE c.room = calls_calls.room AND c.ended_at IS NULL AND (c.started_at > calls_calls.started_at OR (c.started_at = calls_calls.started_at AND c.id > calls_calls.id)));
     CREATE UNIQUE INDEX calls_calls_live ON calls_calls (room) WHERE ended_at IS NULL",
     },
+    // Where browsers reach the node's TURN relay (a turns: URL), if it has one.
+    Migration {
+        version: 4,
+        name: "TURN relay",
+        sql: "ALTER TABLE calls_nodes ADD COLUMN turn TEXT",
+    },
 ];
+
+/// A node's TURN relay URL and its token (sealed), when it has a relay.
+pub async fn node_turn(s: &dyn AsyncStore, id: &str) -> StoreResult<Option<(String, String)>> {
+    Ok(s.query(
+        "SELECT turn, token_sealed FROM calls_nodes WHERE id = $1 AND turn IS NOT NULL",
+        &[id.into()],
+    )
+    .await?
+    .first()
+    .map(|r| {
+        (
+            r.text(0).unwrap_or_default().to_string(),
+            r.text(1).unwrap_or_default().to_string(),
+        )
+    }))
+}
 
 /// A session not heard from for this long has left.
 pub const STALE_MS: i64 = 30_000;

@@ -7,6 +7,7 @@
 pub mod api;
 pub mod node;
 pub mod store;
+pub mod turn;
 
 use std::sync::Arc;
 
