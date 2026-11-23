@@ -876,10 +876,11 @@ export class WebCall extends LitElement {
             </div>
             <div class="controls">
               <div class="bar" role="toolbar">
-                <button aria-pressed=${this.muted ? "true" : "false"} @click=${this.toggleMute}>${t(this.localize, this.muted ? "unmute" : "mute")}</button>
-                <button aria-pressed=${this.camera ? "false" : "true"} @click=${this.toggleCamera}>${t(this.localize, this.camera ? "camera" : "cameraOn")}</button>
+                <!-- The label says what a press does; no pressed state on top of it. -->
+                <button @click=${this.toggleMute}>${t(this.localize, this.muted ? "unmute" : "mute")}</button>
+                <button @click=${this.toggleCamera}>${t(this.localize, this.camera ? "camera" : "cameraOn")}</button>
                 <button aria-pressed=${this.sharing || this.mine()?.doc ? "true" : "false"} @click=${this.share}>${t(this.localize, this.sharing ? "stopSharing" : this.mine()?.doc ? "stopPresenting" : "shareScreen")}</button>
-                <button aria-pressed=${this.hand ? "true" : "false"} @click=${this.toggleHand}>${t(this.localize, this.hand ? "lowerHand" : "raiseHand")}</button>
+                <button @click=${this.toggleHand}>${t(this.localize, this.hand ? "lowerHand" : "raiseHand")}</button>
                 <button class="leave" @click=${this.leave}>${t(this.localize, "leave")}</button>
               </div>
             </div>

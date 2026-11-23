@@ -143,6 +143,30 @@ fn a_rooms_call_from_start_to_end() {
             None,
         );
         assert_eq!(200, status, "{name}: {hers}");
+        // Marek's phone rings: a call notification for him, none for her.
+        let told = |email: &str| {
+            let id = block_on(ortus_core::auth::accounts::by_email(
+                instance.store.as_ref(),
+                email,
+            ))
+            .unwrap()
+            .unwrap()
+            .id;
+            block_on(instance.store.query(
+                "SELECT path FROM core_notifications WHERE user_id = $1 AND app = 'calls'",
+                &[id.as_str().into()],
+            ))
+            .unwrap()
+            .iter()
+            .map(|r| r.text(0).unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            vec![format!("/calls?room={room}")],
+            told("marek@ministry.example"),
+            "{name}"
+        );
+        assert!(told("olena@ministry.example").is_empty(), "{name}");
         let call_id = hers["call"]["id"].as_str().unwrap().to_string();
         let her_session = hers["session"].as_str().unwrap().to_string();
         let (_, his) = call(

@@ -200,6 +200,30 @@ async fn join(
             .await?
             .notice(&me.id, &room.id, "ortus.call", &call.id)
             .await;
+        // And each other member, as a notification their phones ring for
+        // (the core sends a call's notification as a call: CallKit on an
+        // iPhone, a full-screen call on Android).
+        let room_name = if room.kind == "channel" {
+            format!("#{}", room.name)
+        } else {
+            room.name.clone()
+        };
+        for member in room.members.iter().filter(|m| **m != me.id) {
+            let _ = ortus_core::notify::add(
+                instance.store.as_ref(),
+                member,
+                &ortus_core::notify::Notice {
+                    app: "calls",
+                    kind: ortus_core::notify::Kind::Alert,
+                    title: &format!("{} started a call in {room_name}", me.name),
+                    detail: "",
+                    path: &format!("/calls?room={}", room.id),
+                    key: Some("callStarted"),
+                    args: json!({"who": me.name, "room": room_name}),
+                },
+            )
+            .await;
+        }
         ortus_core::auth::audit(
             instance,
             ortus_core::audit::Event::new("calls.started", ortus_core::audit::Outcome::Done)
