@@ -286,3 +286,52 @@ async fn a_browser_reaches_the_media_node_through_the_relay_and_nothing_else() {
     assert_eq!(&[0x40, 0x01, 0, 8], &back[..4]);
     assert_eq!(b"pong:abc", &back[4..12]);
 }
+
+#[tokio::test]
+async fn one_address_cannot_take_the_whole_relay() {
+    let media = Media {
+        public: "203.0.113.5:40000".parse().unwrap(),
+        local: "127.0.0.1:9".parse().unwrap(),
+    };
+    let listen = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let (_stop_tx, stop) = tokio::sync::watch::channel(false);
+    tokio::spawn(turn::serve(listen, "node-token".into(), media, stop));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Up to the cap, connections stay open.
+    let mut held = Vec::new();
+    for _ in 0..turn::MAX_PER_ADDRESS {
+        held.push(TcpStream::connect(listen).await.unwrap());
+    }
+    // The next one from the same address is closed at once.
+    let mut extra = TcpStream::connect(listen).await.unwrap();
+    let mut buf = [0u8; 1];
+    let read = tokio::time::timeout(Duration::from_secs(5), extra.read(&mut buf)).await;
+    assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "{read:?}");
+    // One goes, and another may come.
+    drop(held.pop());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut again = TcpStream::connect(listen).await.unwrap();
+    let read = tokio::time::timeout(Duration::from_millis(500), again.read(&mut buf)).await;
+    assert!(
+        read.is_err(),
+        "a connection under the cap stays open: {read:?}"
+    );
+}
+
+#[test]
+fn an_ipv6_network_counts_as_one_address() {
+    use std::net::IpAddr;
+    let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+    let b: IpAddr = "2001:db8:1:2:bbbb::9".parse().unwrap();
+    let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+    assert_eq!(turn::network_of(a), turn::network_of(b));
+    assert_ne!(turn::network_of(a), turn::network_of(c));
+    let mapped: IpAddr = "::ffff:192.0.2.7".parse().unwrap();
+    assert_eq!(
+        turn::network_of(mapped),
+        "192.0.2.7".parse::<IpAddr>().unwrap()
+    );
+}

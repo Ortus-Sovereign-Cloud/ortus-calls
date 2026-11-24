@@ -28,6 +28,11 @@ pub const REALM: &str = "ortus";
 pub const MAX_MESSAGE: usize = 4096;
 /// Connections at once.
 pub const MAX_CONNECTIONS: usize = 1000;
+/// Connections at once from one address (an IPv6 /64 is one): an office
+/// behind one NAT shares it, one machine cannot take the whole relay.
+pub const MAX_PER_ADDRESS: usize = 32;
+/// How long TURN credentials handed to a call's session last.
+pub const CREDENTIAL_SECS: u64 = 4 * 3600;
 /// Allocation lifetimes: asked for, at most.
 const DEFAULT_LIFETIME: u32 = 600;
 const MAX_LIFETIME: u32 = 3600;
@@ -363,6 +368,7 @@ pub async fn serve(
         .map_err(|e| format!("TURN on {listen}: {e}"))?;
     println!("ortus: calls: TURN relay on {listen}");
     let open = Arc::new(AtomicUsize::new(0));
+    let from: Arc<std::sync::Mutex<std::collections::HashMap<IpAddr, usize>>> = Arc::default();
     let secret = Arc::new(secret);
     loop {
         tokio::select! {
@@ -372,14 +378,46 @@ pub async fn serve(
                 if open.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
                     continue;
                 }
+                let network = network_of(client.ip());
+                {
+                    let mut from = from.lock().expect("the address counts");
+                    let n = from.entry(network).or_default();
+                    if *n >= MAX_PER_ADDRESS {
+                        continue;
+                    }
+                    *n += 1;
+                }
                 open.fetch_add(1, Ordering::SeqCst);
-                let (open, secret) = (Arc::clone(&open), Arc::clone(&secret));
+                let (open, from, secret) = (Arc::clone(&open), Arc::clone(&from), Arc::clone(&secret));
                 tokio::spawn(async move {
                     let _ = connection(stream, client, &secret, media).await;
                     open.fetch_sub(1, Ordering::SeqCst);
+                    let mut from = from.lock().expect("the address counts");
+                    if let Some(n) = from.get_mut(&network) {
+                        *n -= 1;
+                        if *n == 0 {
+                            from.remove(&network);
+                        }
+                    }
                 });
             }
         }
+    }
+}
+
+/// The address connections are counted by: an IPv4 address, or an IPv6
+/// /64 (one machine or home holds a whole /64).
+pub fn network_of(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let mut o = v6.octets();
+                o[8..].fill(0);
+                IpAddr::V6(o.into())
+            }
+        },
     }
 }
 
