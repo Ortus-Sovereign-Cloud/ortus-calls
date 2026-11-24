@@ -69,7 +69,7 @@ export class WebCall extends LitElement {
     :host {
       display: flex;
       flex-direction: column;
-      min-block-size: 100vh;
+      min-block-size: var(--ortus-screen, 100vh);
       background: var(--ortus-bg, #07080c);
       color: var(--ortus-text, #eceef3);
       font-size: 15px;
@@ -397,6 +397,91 @@ export class WebCall extends LitElement {
     dialog .cancel {
       background: none;
       color: var(--ortus-text-3, #9198a8);
+    }
+    /* A phone: the call fills the screen above the shell's bar; the stage
+       and the people scroll between the header and the controls, which
+       stay at the bottom within reach. */
+    @media (max-width: 720px) {
+      :host {
+        block-size: var(--ortus-screen, 100dvh);
+        min-block-size: 0;
+      }
+      header {
+        padding-block: 8px;
+        padding-inline: 8px 16px;
+        gap: 8px;
+      }
+      header a {
+        inline-size: 44px;
+        block-size: 44px;
+      }
+      header strong {
+        flex: 1;
+        min-inline-size: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .body {
+        flex: 1 1 0;
+        min-block-size: 0;
+        overflow-y: auto;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        gap: 12px;
+        padding-block: 0 12px;
+        padding-inline: 12px;
+      }
+      section.stage {
+        flex: none;
+      }
+      .stage-head {
+        padding-block: 10px;
+        padding-inline: 14px;
+      }
+      .stage-body {
+        padding: 12px;
+        min-block-size: 200px;
+      }
+      .stage-doc {
+        min-block-size: 360px;
+      }
+      aside {
+        flex: none;
+        max-inline-size: none;
+      }
+      .tile {
+        block-size: 120px;
+      }
+      .controls {
+        padding-block: 8px 12px;
+        padding-inline: 12px;
+      }
+      .bar {
+        flex: 1;
+        justify-content: center;
+        gap: 6px;
+        padding: 6px;
+      }
+      .bar button {
+        flex: 1 1 auto;
+        padding-inline: 12px;
+      }
+      .bar button.leave {
+        padding-inline: 16px;
+      }
+      .input {
+        min-block-size: 44px;
+      }
+      form.action .add,
+      dialog button {
+        block-size: 44px;
+      }
+      dialog {
+        min-inline-size: min(320px, calc(100vw - 16px));
+        max-inline-size: calc(100vw - 16px);
+        box-sizing: border-box;
+      }
     }
   `;
 

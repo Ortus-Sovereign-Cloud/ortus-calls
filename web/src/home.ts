@@ -102,6 +102,26 @@ export class OrtusCallsHome extends LitElement {
     .quiet {
       color: var(--ortus-text-2);
     }
+    /* A phone: the list fills the width; a row's button goes under its name when it must. */
+    @media (max-width: 720px) {
+      :host {
+        padding: 16px;
+      }
+      li {
+        flex-wrap: wrap;
+        gap: 10px 14px;
+        padding: 12px 14px;
+      }
+      .what {
+        flex: 1 1 160px;
+      }
+      a.button {
+        display: inline-flex;
+        align-items: center;
+        min-block-size: 44px;
+        box-sizing: border-box;
+      }
+    }
   `;
 
   private readonly localize = new LocalizeController(this);
