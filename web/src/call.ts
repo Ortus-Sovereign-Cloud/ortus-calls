@@ -505,6 +505,24 @@ export class WebCall extends LitElement {
   @state() private docsInstalled = false;
   @state() private docsReady = false;
   @state() private choosing: { id: string; name: string }[] | null = null;
+  /** What had focus before the "present what" dialog opened. */
+  private opener: HTMLElement | null = null;
+
+  override updated(): void {
+    // The dialog opens as a modal: focus moves into it and Escape closes
+    // it; once it is gone, focus goes back to the button that opened it.
+    const d = this.renderRoot.querySelector<HTMLDialogElement>("dialog.modal");
+    if (d && !d.open) {
+      let a = document.activeElement;
+      while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
+      this.opener = a instanceof HTMLElement ? a : null;
+      d.showModal();
+    } else if (!d && this.opener) {
+      const back = this.opener;
+      this.opener = null;
+      if (back.isConnected) back.focus();
+    }
+  }
   private pc: RTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
   private local: MediaStream | null = null;
@@ -971,7 +989,7 @@ export class WebCall extends LitElement {
             </div>
             ${audios}
             ${this.choosing
-              ? html`<dialog open aria-label=${t(this.localize, "presentWhat")}>
+              ? html`<dialog class="modal" aria-label=${t(this.localize, "presentWhat")} @close=${() => (this.choosing = null)}>
                   <h2>${t(this.localize, "presentWhat")}</h2>
                   <button class="choice" @click=${() => ((this.choosing = null), void this.toggleScreen())}>${t(this.localize, "yourScreen")}</button>
                   ${this.choosing.map((d) => html`<button class="choice" @click=${() => this.present(d.id)}>${d.name}</button>`)}
